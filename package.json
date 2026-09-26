@@ -1,0 +1,11 @@
+{
+  "name": "copybot",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev:backend": "npm --workspace apps/backend run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "test": "npm --workspace apps/backend test",
+    "typecheck": "npm --workspace apps/backend run typecheck && npm --workspace apps/web run typecheck"
+  }
+}
