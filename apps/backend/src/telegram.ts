@@ -30,24 +30,35 @@ export class TelegramController {
         keyboard.row();
       }
     }
-    await this.bot.api.sendMessage(chatId, text, { reply_markup: keyboard });
+    try {
+      await this.bot.api.sendMessage(chatId, text, { reply_markup: keyboard });
+    } catch (error) {
+      console.error("telegram_notify_failed", { chatId, error: String(error) });
+    }
   }
 
   async start() {
-    await this.bot.api.setMyCommands([
-      { command: "start", description: "Register this Telegram account" },
-      { command: "login", description: "Get a one-time web login code" },
-      { command: "follow", description: "Follow a FOMO trader: /follow @handle" },
-      { command: "following", description: "List followed traders" },
-      { command: "unfollow", description: "Stop following a config" },
-      { command: "positions", description: "List open positions" },
-      { command: "wallet", description: "Show your dedicated copy wallet" },
-      { command: "live", description: "Request live mode for a config" },
-      { command: "paper", description: "Return a config to paper mode" },
-      { command: "pause", description: "Pause new copied entries" },
-      { command: "resume", description: "Resume automatic copying" },
-      { command: "help", description: "Show commands" },
-    ]);
+    try {
+      await this.bot.api.setMyCommands([
+        { command: "start", description: "Register this Telegram account" },
+        { command: "login", description: "Get a one-time web login code" },
+        { command: "follow", description: "Follow a FOMO trader: /follow @handle" },
+        { command: "following", description: "List followed traders" },
+        { command: "unfollow", description: "Stop following a config" },
+        { command: "positions", description: "List open positions" },
+        { command: "wallet", description: "Show your dedicated copy wallet" },
+        { command: "live", description: "Request live mode for a config" },
+        { command: "paper", description: "Return a config to paper mode" },
+        { command: "liveall", description: "Request live mode for all followed traders" },
+        { command: "paperall", description: "Return all followed traders to paper mode" },
+        { command: "pause", description: "Pause new copied entries" },
+        { command: "resume", description: "Resume automatic copying" },
+        { command: "help", description: "Show commands" },
+      ]);
+    } catch (error) {
+      console.error("telegram_set_commands_failed", String(error));
+    }
+    this.bot.catch((error) => console.error("telegram_bot_error", String(error.error)));
     this.bot.start({ onStart: () => console.log("telegram_bot_started") });
   }
 
@@ -198,6 +209,13 @@ export class TelegramController {
       await ctx.reply(updated ? "Config returned to PAPER mode." : "Config not found.");
     });
 
+    this.bot.command("paperall", async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const updated = await this.db.setAllCopyConfigsMode(user.id, true);
+      await ctx.reply(`All followed traders returned to PAPER mode (${updated} config${updated === 1 ? "" : "s"}). Existing live positions remain real and manageable.`);
+    });
+
     this.bot.command("live", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
@@ -207,6 +225,15 @@ export class TelegramController {
       if (!current || current.userId !== user.id) return void ctx.reply("Config not found.");
       const kb = new InlineKeyboard().text("I understand — enable LIVE", `confirm_live:${id}`).row().text("Cancel", "noop");
       await ctx.reply("⚠️ LIVE mode can spend real funds from your dedicated copy wallet. Confirm explicitly. New configs never become live automatically.", { reply_markup: kb });
+    });
+
+    this.bot.command("liveall", async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const rows = await this.db.listUserTraders(user.id);
+      if (!rows.length) return void ctx.reply("You are not following any traders yet.");
+      const kb = new InlineKeyboard().text("I understand — enable LIVE for all", "confirm_live_all").row().text("Cancel", "noop");
+      await ctx.reply(`⚠️ Enable LIVE for all ${rows.length} followed trader${rows.length === 1 ? "" : "s"}?\n\nFuture qualifying entries for any followed trader can spend real funds from your copy wallet. Confirm explicitly.`, { reply_markup: kb });
     });
 
     this.bot.callbackQuery(/^confirm_live:(.+)$/, async (ctx) => {
@@ -226,6 +253,22 @@ export class TelegramController {
       }
       await this.db.updateCopyConfig(user.id, id, { dryRun: false });
       await ctx.editMessageText("🔴 LIVE mode enabled for this config. Real trades may now execute under its rules.");
+    });
+
+    this.bot.callbackQuery("confirm_live_all", async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const wallet = await this.db.getCopyWallet(user.id, "solana");
+      if (!wallet) return void ctx.answerCallbackQuery({ text: "No copy wallet configured", show_alert: true });
+      if (!this.config.JUPITER_API_KEY) return void ctx.answerCallbackQuery({ text: "Live trading is not ready: Jupiter API key is missing", show_alert: true });
+      try {
+        const signer = loadSolanaSigner(wallet.signer_ref);
+        if (signer.publicKey.toBase58() !== wallet.public_address) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
+      } catch (error) {
+        return void ctx.answerCallbackQuery({ text: `Live trading is not ready: ${String(error).slice(0, 120)}`, show_alert: true });
+      }
+      const updated = await this.db.setAllCopyConfigsMode(user.id, false);
+      await ctx.editMessageText(`🔴 LIVE mode enabled for ${updated} followed trader${updated === 1 ? "" : "s"}. Real trades may now execute under their rules.`);
     });
 
     this.bot.callbackQuery(/^exit:(25|50|75|100):(.+)$/, async (ctx) => {
@@ -252,6 +295,6 @@ export class TelegramController {
 
     this.bot.callbackQuery("noop", (ctx) => ctx.answerCallbackQuery());
 
-    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id>"));
+    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall"));
   }
 }

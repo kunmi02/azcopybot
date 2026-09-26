@@ -13,6 +13,8 @@ import { TraderService } from "./services/traders.js";
 import { TelegramController } from "./telegram.js";
 import { buildApi } from "./api.js";
 import { SubmissionReconciler } from "./services/reconcile.js";
+import { ActivityService } from "./services/activity.js";
+import { HealthService } from "./services/health.js";
 
 const config = loadConfig();
 const db = new Database(config.DATABASE_URL);
@@ -28,6 +30,8 @@ const prices = new DexScreenerPriceService();
 const rpc = new SolanaRpc(config.SOLANA_RPC_URL);
 const jupiter = new JupiterClient(config.JUPITER_API_BASE, config.JUPITER_API_KEY);
 const executor = new SolanaExecutor(rpc, jupiter, prices);
+const activity = new ActivityService(db);
+const health = new HealthService();
 
 let watched = new Set<string>();
 let telegram!: TelegramController;
@@ -38,6 +42,8 @@ const watcher = new SolanaGrpcWatcher(config.TRITON_GRPC_ENDPOINT, config.TRITON
 
 async function refreshWatchers() {
   watched = new Set(await db.listSolanaWatchedAddresses());
+  health.setWatchedWallets(watched.size);
+  health.markTriton(watched.size ? "healthy" : "unknown");
   await watcher.reconfigure([...watched]);
   console.log("watcher_reconfigured", { wallets: watched.size });
 }
@@ -47,17 +53,18 @@ const notify = async (chatId: string, text: string, buttons?: Array<Array<{ text
   await telegram.notify(chatId, text, buttons);
 };
 
-const positions = new PositionService(db, prices, executor, notify);
-const copyTrade = new CopyTradeService(db, prices, executor, notify);
-engine = new TradingEngine(db, prices, copyTrade, positions, notify, () => watched);
+const positions = new PositionService(db, prices, executor, notify, activity);
+const copyTrade = new CopyTradeService(db, prices, executor, notify, activity);
+engine = new TradingEngine(db, prices, copyTrade, positions, notify, () => watched, activity, health);
 const fomoscan = new FomoScanClient(config.FOMOSCAN_API_BASE, config.FOMOSCAN_API_KEY);
-const traders = new TraderService(db, fomoscan, refreshWatchers);
+const traders = new TraderService(db, fomoscan, refreshWatchers, activity);
 telegram = new TelegramController(config, db, traders, positions, rpc);
 const reconciler = new SubmissionReconciler(db, rpc, notify);
 
-const api = await buildApi(config, db, traders, positions, prices, rpc);
+const api = await buildApi(config, db, traders, positions, prices, rpc, activity, health);
 await api.listen({ host: "0.0.0.0", port: config.API_PORT });
 await telegram.start();
+health.markTelegramStarted();
 await refreshWatchers();
 
 const positionTimer = setInterval(() => {

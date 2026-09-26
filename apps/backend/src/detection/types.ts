@@ -5,6 +5,7 @@ export interface TokenAccountBalance {
   mint: string;
   owner?: string;
   amount: bigint;
+  decimals?: number;
 }
 
 export interface TransactionSnapshot {
@@ -28,5 +29,6 @@ export interface DetectionCandidate {
   quoteAmountRaw?: bigint;
   tokenAmountRaw?: bigint;
   preTokenAmountRaw?: bigint;
+  tokenDecimals?: number;
   requiresLiquidityCheck: boolean;
 }

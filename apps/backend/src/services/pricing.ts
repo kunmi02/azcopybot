@@ -2,6 +2,7 @@ export interface TokenMarket {
   priceUsd: number;
   liquidityUsd: number;
   symbol?: string;
+  name?: string;
 }
 
 export class DexScreenerPriceService {
@@ -15,6 +16,7 @@ export class DexScreenerPriceService {
         priceUsd: Number(p.priceUsd),
         liquidityUsd: Number(p.liquidity?.usd ?? 0),
         symbol: p.baseToken?.symbol as string | undefined,
+        name: p.baseToken?.name as string | undefined,
       }))
       .filter((p) => Number.isFinite(p.priceUsd) && p.priceUsd > 0)
       .sort((a, b) => b.liquidityUsd - a.liquidityUsd);

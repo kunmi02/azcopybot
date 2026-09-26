@@ -26,6 +26,12 @@ function getTokenAmount(map: Map<string, bigint>, owner: string, mint: string) {
   return map.get(`${owner}\u0000${mint}`) ?? 0n;
 }
 
+function tokenDecimals(snapshot: TransactionSnapshot, owner: string, mint: string) {
+  const balance = [...snapshot.postTokenBalances, ...snapshot.preTokenBalances]
+    .find((b) => b.owner === owner && b.mint === mint && b.decimals != null);
+  return balance?.decimals;
+}
+
 function rentDepositedFor(wallet: string, snapshot: TransactionSnapshot): bigint {
   let rent = 0n;
   for (const b of snapshot.postTokenBalances) {
@@ -98,7 +104,7 @@ export function detectForWallet(
     const before = getTokenAmount(pre, wallet, mint);
     const after = getTokenAmount(post, wallet, mint);
     if (before > 0n && after === 0n) {
-      results.push({ classification: "full_exit", wallet, token: mint, tokenAmountRaw: before, requiresLiquidityCheck: false });
+      results.push({ classification: "full_exit", wallet, token: mint, tokenAmountRaw: before, tokenDecimals: tokenDecimals(snapshot, wallet, mint), requiresLiquidityCheck: false });
     }
   }
 
@@ -130,6 +136,7 @@ export function detectForWallet(
         quoteAmountRaw: paired.amount,
         tokenAmountRaw: acquired,
         preTokenAmountRaw: before,
+        tokenDecimals: tokenDecimals(snapshot, wallet, mint),
         requiresLiquidityCheck: false,
       });
       continue;
@@ -144,6 +151,7 @@ export function detectForWallet(
         token: mint,
         tokenAmountRaw: acquired,
         preTokenAmountRaw: before,
+        tokenDecimals: tokenDecimals(snapshot, wallet, mint),
         requiresLiquidityCheck: true,
       });
     }

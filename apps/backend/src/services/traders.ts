@@ -1,12 +1,14 @@
 import type { Database } from "../db.js";
 import type { FomoScanClient } from "../sources/fomoscan.js";
 import { PublicKey } from "@solana/web3.js";
+import type { ActivityService } from "./activity.js";
 
 export class TraderService {
   constructor(
     private readonly db: Database,
     private readonly fomoscan: FomoScanClient,
     private readonly refreshWatchers: () => Promise<void>,
+    private readonly activity?: ActivityService,
   ) {}
 
   async resolveFomo(handle: string) {
@@ -32,11 +34,25 @@ export class TraderService {
   }
 
   async unfollow(userId: string, configId: string) {
-    const config = await this.db.getCopyConfig(configId);
-    if (!config || config.userId !== userId) throw new Error("CONFIG_NOT_FOUND");
-    await this.db.updateCopyConfig(userId, configId, { enabled: false, dryRun: true });
+    const removed = await this.db.unfollowCopyConfig(userId, configId);
+    if (!removed) throw new Error("CONFIG_NOT_FOUND");
     await this.refreshWatchers();
-    return { ok: true };
+    const label = removed.handle ? `@${removed.handle}` : removed.display_name;
+    await this.activity?.emit({
+      userId,
+      traderId: removed.trader_id,
+      type: "trader_unfollowed",
+      severity: "warning",
+      message: `Unfollowed ${label}. Future signals are stopped; existing positions remain manageable.`,
+      metadata: { configId },
+    });
+    return { ok: true, removedConfigId: removed.id, trader: label };
+  }
+
+  async updateConfig(userId: string, configId: string, patch: Parameters<Database["updateCopyConfig"]>[2]) {
+    const updated = await this.db.updateCopyConfig(userId, configId, patch);
+    if ("enabled" in patch) await this.refreshWatchers();
+    return updated;
   }
 
   async followWallet(userId: string, input: { label: string; chain: string; address: string }) {

@@ -9,9 +9,24 @@ type Dashboard = {
   wallet: any;
   positions: any[];
   traders: any[];
+  inactiveTraders?: any[];
   executions: any[];
+  activity: any[];
   walletBalances?: { sol: number | null; usdc: number | null } | null;
+  walletReadiness?: { copyWallet: boolean; signer: boolean; jupiter: boolean; solReserve: boolean; usdcBalance: boolean };
 };
+
+type SystemHealth = {
+  triton: string;
+  telegram: string;
+  watchedWallets: number;
+  lastChainEventAt: string | null;
+  solanaRpc?: { state: string; slot?: number; latencyMs?: number; error?: string };
+  jupiter?: { state: string; baseUrl: string };
+  fomoScan?: { state: string; baseUrl: string };
+};
+
+type TraderGroup = { key: string; label: string; items: any[] };
 
 async function request(path: string, token: string | null, init?: RequestInit) {
   const headers: Record<string, string> = { "content-type": "application/json" };
@@ -32,12 +47,44 @@ export default function Home() {
   const [walletAddress, setWalletAddress] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [activity, setActivity] = useState<any[]>([]);
+  const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [feedStatus, setFeedStatus] = useState<"connecting" | "live" | "disconnected">("connecting");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   useEffect(() => setToken(localStorage.getItem("copybot_session")), []);
-  useEffect(() => { if (token) void load(); }, [token]);
+  useEffect(() => { if (token) { void load(); void loadHealth(); } }, [token]);
+  useEffect(() => {
+    if (!token) return;
+    setFeedStatus("connecting");
+    const events = new EventSource(`${API}/api/events?token=${encodeURIComponent(token)}`);
+    events.addEventListener("ready", () => setFeedStatus("live"));
+    events.addEventListener("activity", (raw) => {
+      const event = JSON.parse((raw as MessageEvent).data);
+      setActivity((current) => [event, ...current].slice(0, 80));
+      setLastUpdated(new Date());
+    });
+    events.onerror = () => setFeedStatus("disconnected");
+    return () => events.close();
+  }, [token]);
+  useEffect(() => {
+    if (!token) return;
+    const timer = setInterval(() => void loadHealth(), 10_000);
+    return () => clearInterval(timer);
+  }, [token]);
 
   async function load() {
-    try { setData(await request("/api/dashboard", token)); }
+    try {
+      const dashboard = await request("/api/dashboard", token);
+      setData(dashboard);
+      setActivity(dashboard.activity ?? []);
+      setLastUpdated(new Date());
+    }
+    catch (e) { setMessage(String(e)); }
+  }
+
+  async function loadHealth() {
+    try { setHealth(await request("/api/system-health", token)); }
     catch (e) { setMessage(String(e)); }
   }
 
@@ -87,7 +134,10 @@ export default function Home() {
   }
 
   async function exit(positionId: string, percentage: number) {
-    if (!confirm(`Exit ${percentage}% of this position?`)) return;
+    const position = data?.positions.find((p) => p.id === positionId);
+    const label = position?.symbol ?? position?.token ?? "this position";
+    const value = position?.current_value_usd == null ? "unknown" : `$${(Number(position.current_value_usd) * (percentage / 100)).toFixed(2)}`;
+    if (!confirm(`${position?.mode === "live" ? "Sell" : "Close"} ${percentage}% of ${label}?\nEstimated value: ${value}\nCurrent PnL: ${position?.pnl_pct == null ? "unknown" : `${Number(position.pnl_pct).toFixed(1)}%`}`)) return;
     setBusy(true); setMessage("");
     try {
       await request(`/api/positions/${positionId}/exit`, token, { method: "POST", body: JSON.stringify({ percentage }) });
@@ -98,20 +148,59 @@ export default function Home() {
 
   async function updateConfig(id: string, patch: any) {
     setBusy(true); setMessage("");
-    try { await request(`/api/configs/${id}`, token, { method: "PATCH", body: JSON.stringify(patch) }); await load(); }
+    try {
+      await request(`/api/configs/${id}`, token, { method: "PATCH", body: JSON.stringify(patch) });
+      await load();
+      setMessage("Settings saved.");
+    }
     catch (e) { setMessage(String(e)); }
     finally { setBusy(false); }
   }
 
   async function unfollow(id: string, label: string) {
-    if (!confirm(`Stop following ${label}?`)) return;
+    if (!confirm(`Unfollow ${label}?\n\nThis stops future signals for this trader. Existing positions remain visible and manageable.`)) return;
     setBusy(true); setMessage("");
-    try { await request(`/api/configs/${id}`, token, { method: "DELETE" }); await load(); }
+    try {
+      const result = await request(`/api/configs/${id}`, token, { method: "DELETE" });
+      const removedId = result.removedConfigId ?? id;
+      setData((current) => current ? { ...current, traders: current.traders.filter((trader) => trader.config_id !== removedId) } : current);
+      setMessage(`Unfollowed ${result.trader ?? label}. Existing positions were not closed.`);
+      await load();
+    }
     catch (e) { setMessage(String(e)); }
     finally { setBusy(false); }
   }
 
+  async function followAgain(id: string, label: string) {
+    setBusy(true); setMessage("");
+    try {
+      await request(`/api/configs/${id}`, token, { method: "PATCH", body: JSON.stringify({ enabled: true }) });
+      setMessage(`Following ${label} again. New entries start in paper mode unless you enable live.`);
+      await load();
+    } catch (e) { setMessage(String(e)); }
+    finally { setBusy(false); }
+  }
+
+  async function setAllMode(live: boolean) {
+    if (live) {
+      if (!confirm(`Enable LIVE for all ${data?.traders.length ?? 0} followed trader${data?.traders.length === 1 ? "" : "s"}?\n\nFuture qualifying entries for any followed trader can spend real funds from your copy wallet.`)) return;
+    } else if (!confirm("Return all followed traders to PAPER mode?\n\nFuture entries become simulated. Existing live positions remain real and manageable.")) return;
+    setBusy(true); setMessage("");
+    try {
+      const result = await request(`/api/trading/${live ? "live-all" : "paper-all"}`, token, { method: "POST", body: JSON.stringify(live ? { confirmLive: true } : {}) });
+      setMessage(live ? `LIVE enabled for ${result.updated} followed trader${result.updated === 1 ? "" : "s"}.` : `Paper mode enabled for ${result.updated} followed trader${result.updated === 1 ? "" : "s"}.`);
+      await load();
+    } catch (e) { setMessage(String(e)); }
+    finally { setBusy(false); }
+  }
+
   const paperCount = useMemo(() => data?.positions.filter((p) => p.mode === "paper").length ?? 0, [data]);
+  const livePositions = useMemo(() => data?.positions.filter((p) => p.mode === "live") ?? [], [data]);
+  const paperPositions = useMemo(() => data?.positions.filter((p) => p.mode === "paper") ?? [], [data]);
+  const liveGroups = useMemo(() => groupByTrader(livePositions), [livePositions]);
+  const paperGroups = useMemo(() => groupByTrader(paperPositions), [paperPositions]);
+  const executionGroups = useMemo(() => groupByTrader(data?.executions ?? []), [data?.executions]);
+  const liveReady = Boolean(data?.walletReadiness && Object.values(data.walletReadiness).every(Boolean));
 
   if (!token) {
     return <main className="center"><section className="login card">
@@ -131,7 +220,7 @@ export default function Home() {
   return <main className="shell">
     <header>
       <div><div className="eyebrow">COPYBOT</div><h1>Trading control</h1></div>
-      <div className="actions"><span className={data.user.paused ? "badge warn" : "badge live"}>{data.user.paused ? "PAUSED" : "ACTIVE"}</span><button className="secondary" onClick={() => pause(!data.user.paused)}>{data.user.paused ? "Resume" : "Pause entries"}</button></div>
+      <div className="actions"><span className={data.user.paused ? "badge warn" : "badge live"}>{data.user.paused ? "NEW ENTRIES PAUSED" : "ACTIVE"}</span><button className="secondary" onClick={() => pause(!data.user.paused)}>{data.user.paused ? "Resume entries" : "Pause all new entries"}</button><button className="secondary" disabled={busy || !data.traders.length} onClick={() => void setAllMode(false)}>Paper all</button><button className="danger" disabled={busy || !liveReady || !data.traders.length} title={liveReady ? "" : "Complete wallet readiness before enabling live"} onClick={() => void setAllMode(true)}>Live all</button></div>
     </header>
 
     {message && <div className="notice">{message}</div>}
@@ -141,6 +230,41 @@ export default function Home() {
       <div className="card stat"><span>Paper positions</span><strong>{paperCount}</strong></div>
       <div className="card stat"><span>Following</span><strong>{data.traders.length}</strong></div>
       <div className="card stat"><span>Copy wallet</span><strong className="mono small">{data.wallet?.public_address ? `${data.wallet.public_address.slice(0, 5)}…${data.wallet.public_address.slice(-5)}` : "Not configured"}</strong>{data.walletBalances && <small className="muted">{data.walletBalances.usdc == null ? "USDC ?" : `$${data.walletBalances.usdc.toFixed(2)} USDC`} · {data.walletBalances.sol == null ? "SOL ?" : `${data.walletBalances.sol.toFixed(4)} SOL`}</small>}</div>
+    </section>
+
+    <section className="opsGrid">
+      <div className="card">
+        <div className="sectionTitle"><h2>System health</h2><span>{feedStatus === "live" ? `Live${lastUpdated ? ` · updated ${timeAgo(lastUpdated)}` : ""}` : feedStatus}</span></div>
+        <div className="healthGrid">
+          <HealthItem label="Triton stream" state={health?.triton ?? "unknown"} />
+          <HealthItem label="Solana RPC" state={health?.solanaRpc?.state ?? "unknown"} detail={health?.solanaRpc?.latencyMs == null ? undefined : `${health.solanaRpc.latencyMs}ms`} />
+          <HealthItem label="Telegram" state={health?.telegram ?? "unknown"} />
+          <HealthItem label="Jupiter" state={health?.jupiter?.state ?? "unknown"} />
+          <HealthItem label="Watched wallets" state={health?.watchedWallets ? "healthy" : "unknown"} detail={String(health?.watchedWallets ?? 0)} />
+          <HealthItem label="Last chain event" state={health?.lastChainEventAt ? "healthy" : "unknown"} detail={health?.lastChainEventAt ? timeAgo(new Date(health.lastChainEventAt)) : "none"} />
+        </div>
+      </div>
+      <div className="card">
+        <div className="sectionTitle"><h2>Wallet readiness</h2><span>{liveReady ? "Ready for live" : "Live disabled"}</span></div>
+        <div className="healthGrid">
+          <HealthItem label="Copy wallet" state={data.walletReadiness?.copyWallet ? "healthy" : "missing"} />
+          <HealthItem label="Signer" state={data.walletReadiness?.signer ? "healthy" : "missing"} />
+          <HealthItem label="USDC" state={data.walletReadiness?.usdcBalance ? "healthy" : "missing"} detail={data.walletBalances?.usdc == null ? undefined : `$${data.walletBalances.usdc.toFixed(2)}`} />
+          <HealthItem label="SOL reserve" state={data.walletReadiness?.solReserve ? "healthy" : "missing"} detail={data.walletBalances?.sol == null ? undefined : `${data.walletBalances.sol.toFixed(4)} SOL`} />
+          <HealthItem label="Jupiter key" state={data.walletReadiness?.jupiter ? "healthy" : "missing"} />
+        </div>
+      </div>
+      <div className="card">
+        <div className="sectionTitle"><h2>Activity feed</h2><span>{activity.length} recent</span></div>
+        <div className="activityList">
+          {activity.slice(0, 12).map((event) => <div className={`activity ${event.severity ?? "info"}`} key={event.id}>
+            <span>{formatEventTime(event.created_at)}</span>
+            <b>{event.type?.replaceAll("_", " ")}</b>
+            <p>{event.message}</p>
+          </div>)}
+          {!activity.length && <p className="muted">No activity yet. The feed will update as chain events, copies, skips, and errors happen.</p>}
+        </div>
+      </div>
     </section>
 
     <section className="grid2">
@@ -169,40 +293,168 @@ export default function Home() {
     <section className="card">
       <div className="sectionTitle"><h2>Following</h2><span>{data.traders.length} configs</span></div>
       <div className="table">
-        {data.traders.map((t) => <div className="row" key={t.config_id}>
-          <div><b>{t.handle ? `@${t.handle}` : t.display_name}</b><div className="muted mono">{t.wallets?.map((w:any) => `${w.chain}:${String(w.address).slice(0,8)}…`).join(" · ")}</div></div>
-          <label>$ / entry<input type="number" min="1" step="1" defaultValue={t.trade_amount_usd} onBlur={(e) => void updateConfig(t.config_id, { tradeAmountUsd: Number(e.target.value) })} /></label>
-          <label>TP %<input type="number" defaultValue={t.take_profit_pct ?? ""} onBlur={(e) => void updateConfig(t.config_id, { takeProfitPct: e.target.value ? Number(e.target.value) : null })} /></label>
-          <label>SL %<input type="number" defaultValue={t.stop_loss_pct ?? ""} onBlur={(e) => void updateConfig(t.config_id, { stopLossPct: e.target.value ? Number(e.target.value) : null })} /></label>
-          <span className={t.dry_run ? "badge paper" : "badge danger"}>{t.dry_run ? "PAPER" : "LIVE"}</span>
-          <div className="actions">
-            {t.dry_run ? <button className="danger" onClick={() => { if (confirm("Enable LIVE trading for this trader? Real funds may be spent.")) void updateConfig(t.config_id, { dryRun: false, confirmLive: true }); }}>Enable live</button> : <button className="secondary" onClick={() => updateConfig(t.config_id, { dryRun: true })}>Paper mode</button>}
-            <button className="secondary" onClick={() => void unfollow(t.config_id, t.handle ? `@${t.handle}` : t.display_name)}>Unfollow</button>
-          </div>
-        </div>)}
+        {data.traders.map((t) => <FollowingRow key={t.config_id} trader={t} dashboard={data} liveReady={liveReady} busy={busy} updateConfig={updateConfig} unfollow={unfollow} />)}
         {!data.traders.length && <p className="muted">No traders yet.</p>}
       </div>
     </section>
 
-    <section className="card">
-      <div className="sectionTitle"><h2>Open positions</h2><span>{data.positions.length}</span></div>
-      <div className="cards">
-        {data.positions.map((p) => <article className="position" key={p.id}>
-          <div className="positionHead"><b className="mono">{p.token.slice(0,8)}…</b><span className={p.mode === "paper" ? "badge paper" : "badge live"}>{p.mode.toUpperCase()}</span></div>
-          <div className="positionNumbers"><span>Cost <b>${Number(p.cost_usd).toFixed(2)}</b></span><span>Value <b>{p.current_value_usd == null ? "—" : `$${Number(p.current_value_usd).toFixed(2)}`}</b></span><span>PnL <b className={Number(p.pnl_pct) >= 0 ? "buy" : "sell"}>{p.pnl_pct == null ? "—" : `${Number(p.pnl_pct).toFixed(1)}%`}</b></span></div>
-          <p className="muted">{p.symbol ? `${p.symbol} · ` : ""}Entry ${Number(p.avg_entry_price).toPrecision(5)} · TP {p.take_profit_pct ?? "off"}% · SL {p.stop_loss_pct ?? "off"}%</p>
-          <p className="muted">Source: {p.handle ? `@${p.handle}` : p.display_name}</p>
-          <div className="actions"><button className="secondary" onClick={() => exit(p.id, 50)}>Sell 50%</button><button className="danger" onClick={() => exit(p.id, 100)}>Sell all</button></div>
-        </article>)}
-        {!data.positions.length && <p className="muted">No open positions.</p>}
+    {(data.inactiveTraders?.length ?? 0) > 0 && <section className="card">
+      <div className="sectionTitle"><h2>Previously followed</h2><span>{data.inactiveTraders?.length ?? 0}</span></div>
+      <div className="table">
+        {data.inactiveTraders?.map((t) => {
+          const label = t.handle ? `@${t.handle}` : t.display_name;
+          return <div className="row inactiveRow" key={t.config_id}>
+            <div><b>{label}</b><div className="muted mono">{t.wallets?.map((w:any) => `${w.chain}:${String(w.address).slice(0,8)}…`).join(" · ")}</div></div>
+            <span className="muted">Unfollowed</span>
+            <span className="muted">Settings preserved</span>
+            <span className="badge paper">PAPER ON RESTORE</span>
+            <div className="actions"><button className="secondary" disabled={busy} onClick={() => void followAgain(t.config_id, label)}>Follow again</button></div>
+          </div>;
+        })}
       </div>
+    </section>}
+
+    <section className="card">
+      <div className="sectionTitle"><h2>Live positions</h2><span>{livePositions.length}</span></div>
+      <GroupedPositions groups={liveGroups} emptyText="No live positions." onExit={exit} />
+    </section>
+
+    <section className="card">
+      <div className="sectionTitle"><h2>Paper positions</h2><span>{paperPositions.length}</span></div>
+      <GroupedPositions groups={paperGroups} emptyText="No paper positions." onExit={exit} />
     </section>
 
     <section className="card">
       <div className="sectionTitle"><h2>Recent executions</h2><span>last 20</span></div>
-      <div className="table compact">
-        {data.executions.map((e) => <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className="muted">{e.status}</span></div>)}
-      </div>
+      <GroupedExecutions groups={executionGroups} />
     </section>
   </main>;
+}
+
+function GroupedPositions({ groups, emptyText, onExit }: { groups: TraderGroup[]; emptyText: string; onExit: (id: string, percentage: number) => void }) {
+  if (!groups.length) return <p className="muted">{emptyText}</p>;
+  return <div className="traderGroups">
+    {groups.map((group) => <div className="traderGroup" key={group.key}>
+      <div className="traderGroupHead"><b>{group.label}</b><span>{group.items.length} position{group.items.length === 1 ? "" : "s"}</span></div>
+      <div className="cards">{group.items.map((p) => <PositionCard key={p.id} position={p} onExit={onExit} />)}</div>
+    </div>)}
+  </div>;
+}
+
+function GroupedExecutions({ groups }: { groups: TraderGroup[] }) {
+  if (!groups.length) return <p className="muted">No executions yet.</p>;
+  return <div className="traderGroups">
+    {groups.map((group) => <div className="traderGroup" key={group.key}>
+      <div className="traderGroupHead"><b>{group.label}</b><span>{group.items.length} execution{group.items.length === 1 ? "" : "s"}</span></div>
+      <div className="table compact">
+        {group.items.map((e) => <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className={String(e.status).startsWith("failed") ? "sell" : "muted"}>{e.status}</span><span>{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : "—"}</span></div>)}
+      </div>
+    </div>)}
+  </div>;
+}
+
+function PositionCard({ position: p, onExit }: { position: any; onExit: (id: string, percentage: number) => void }) {
+  return <article className={`position ${p.mode}`} key={p.id}>
+          <div className="positionHead"><b className="mono">{p.token.slice(0,8)}…</b><span className={p.mode === "paper" ? "badge paper" : "badge live"}>{p.mode.toUpperCase()}</span></div>
+          <div className="positionNumbers"><span>Cost <b>${Number(p.cost_usd).toFixed(2)}</b></span><span>Value <b>{p.current_value_usd == null ? "—" : `$${Number(p.current_value_usd).toFixed(2)}`}</b></span><span>PnL <b className={Number(p.pnl_pct) >= 0 ? "buy" : "sell"}>{p.pnl_pct == null ? "—" : `${Number(p.pnl_pct).toFixed(1)}%`}</b></span></div>
+          <p className="muted">{p.symbol ? `${p.symbol} · ` : ""}Entry ${Number(p.avg_entry_price).toPrecision(5)} · TP {p.take_profit_pct ?? "off"}% · SL {p.stop_loss_pct ?? "off"}%</p>
+          <p className="muted">{tpSlDistance(p)}</p>
+          <p className="muted">Source: {p.handle ? `@${p.handle}` : p.display_name}</p>
+          <div className="actions sellActions">{[25, 50, 75, 100].map((percentage) => <button key={percentage} className={percentage === 100 ? "danger" : "secondary"} onClick={() => onExit(p.id, percentage)}>{p.mode === "live" ? "Sell" : "Close"} {percentage}%</button>)}</div>
+        </article>;
+}
+
+function FollowingRow({ trader: t, dashboard, liveReady, busy, updateConfig, unfollow }: {
+  trader: any;
+  dashboard: Dashboard;
+  liveReady: boolean;
+  busy: boolean;
+  updateConfig: (id: string, patch: any) => Promise<void>;
+  unfollow: (id: string, label: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [tradeAmountUsd, setTradeAmountUsd] = useState(String(t.trade_amount_usd));
+  const [takeProfitPct, setTakeProfitPct] = useState(t.take_profit_pct == null ? "" : String(t.take_profit_pct));
+  const [stopLossPct, setStopLossPct] = useState(t.stop_loss_pct == null ? "" : String(t.stop_loss_pct));
+  const label = t.handle ? `@${t.handle}` : t.display_name;
+
+  async function saveSettings() {
+    await updateConfig(t.config_id, {
+      tradeAmountUsd: Number(tradeAmountUsd),
+      takeProfitPct: takeProfitPct ? Number(takeProfitPct) : null,
+      stopLossPct: stopLossPct ? Number(stopLossPct) : null,
+    });
+    setEditing(false);
+  }
+
+  function confirmLive() {
+    if (!confirm(`Enable LIVE trading for ${label}?\n$${Number(t.trade_amount_usd).toFixed(2)} per entry\nTP: ${t.take_profit_pct ?? "off"}% · SL: ${t.stop_loss_pct ?? "off"}%\nCopy wallet: ${dashboard.wallet?.public_address ?? "not configured"}\nUSDC: ${dashboard.walletBalances?.usdc == null ? "unknown" : `$${dashboard.walletBalances.usdc.toFixed(2)}`}\nSOL: ${dashboard.walletBalances?.sol == null ? "unknown" : dashboard.walletBalances.sol.toFixed(4)}\n\nFuture qualifying entries can spend real funds.`)) return;
+    void updateConfig(t.config_id, { dryRun: false, confirmLive: true });
+  }
+
+  return <div className="row">
+    <div><b>{label}</b><div className="muted mono">{t.wallets?.map((w:any) => `${w.chain}:${String(w.address).slice(0,8)}…`).join(" · ")}</div></div>
+    {editing ? <>
+      <label>$ / entry<input type="number" min="1" step="1" value={tradeAmountUsd} onChange={(e) => setTradeAmountUsd(e.target.value)} /></label>
+      <label>TP %<input type="number" value={takeProfitPct} onChange={(e) => setTakeProfitPct(e.target.value)} /></label>
+      <label>SL %<input type="number" value={stopLossPct} onChange={(e) => setStopLossPct(e.target.value)} /></label>
+    </> : <>
+      <SettingValue label="$ / entry" value={`$${Number(t.trade_amount_usd).toFixed(2)}`} />
+      <SettingValue label="TP" value={t.take_profit_pct == null ? "off" : `${t.take_profit_pct}%`} />
+      <SettingValue label="SL" value={t.stop_loss_pct == null ? "off" : `${t.stop_loss_pct}%`} />
+    </>}
+    <span className={t.dry_run ? "badge paper" : "badge danger"}>{t.dry_run ? "PAPER: SIMULATE" : "LIVE: REAL FUNDS"}</span>
+    <div className="actions">
+      {editing ? <>
+        <button disabled={busy || !Number(tradeAmountUsd)} onClick={() => void saveSettings()}>Save settings</button>
+        <button className="secondary" onClick={() => setEditing(false)}>Cancel</button>
+      </> : <>
+        <button className="secondary" onClick={() => setEditing(true)}>Edit settings</button>
+        {t.dry_run ? <button className="danger" disabled={busy || !liveReady} title={liveReady ? "" : "Complete wallet readiness before enabling live"} onClick={confirmLive}>Enable live</button> : <button className="secondary" onClick={() => void updateConfig(t.config_id, { dryRun: true })}>Paper mode</button>}
+        <button className="secondary" onClick={() => void unfollow(t.config_id, label)}>Unfollow</button>
+      </>}
+    </div>
+  </div>;
+}
+
+function SettingValue({ label, value }: { label: string; value: string }) {
+  return <div className="settingValue"><span>{label}</span><b>{value}</b></div>;
+}
+
+function HealthItem({ label, state, detail }: { label: string; state: string; detail?: string }) {
+  const className = state === "healthy" || state === "configured" ? "good" : state === "down" || state === "missing_api_key" ? "bad" : "warn";
+  return <div className="healthItem"><span>{label}</span><b className={className}>{state}</b>{detail && <small>{detail}</small>}</div>;
+}
+
+function formatEventTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function timeAgo(date: Date) {
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 2) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ago`;
+}
+
+function tpSlDistance(p: any) {
+  if (p.pnl_pct == null) return "TP/SL distance unavailable until pricing loads.";
+  const pnl = Number(p.pnl_pct);
+  const tp = p.take_profit_pct == null ? "TP off" : `TP ${Number(p.take_profit_pct).toFixed(1)}% · ${(Number(p.take_profit_pct) - pnl).toFixed(1)}% remaining`;
+  const sl = p.stop_loss_pct == null ? "SL off" : `SL -${Number(p.stop_loss_pct).toFixed(1)}% · ${(pnl + Number(p.stop_loss_pct)).toFixed(1)}% buffer`;
+  return `PnL ${pnl.toFixed(1)}% | ${tp} | ${sl}`;
+}
+
+function groupByTrader(items: any[]): TraderGroup[] {
+  const groups = new Map<string, TraderGroup>();
+  for (const item of items) {
+    const key = String(item.trader_id ?? item.traderId ?? item.display_name ?? item.handle ?? "unknown");
+    const label = item.handle ? `@${item.handle}` : item.display_name ?? "Unknown trader";
+    const group = groups.get(key) ?? ({ key, label, items: [] } as TraderGroup);
+    group.items.push(item);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
 }

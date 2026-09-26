@@ -9,6 +9,8 @@ import type { DexScreenerPriceService } from "./services/pricing.js";
 import type { SolanaRpc } from "./chains/solana/rpc.js";
 import { SOLANA_USDC } from "./execution/solana.js";
 import { loadSolanaSigner } from "./wallet.js";
+import type { ActivityService } from "./services/activity.js";
+import type { HealthService } from "./services/health.js";
 
 export async function buildApi(
   config: AppConfig,
@@ -17,6 +19,8 @@ export async function buildApi(
   positions: PositionService,
   prices: DexScreenerPriceService,
   rpc: SolanaRpc,
+  activity: ActivityService,
+  health: HealthService,
 ) {
   const app = Fastify({ logger: true });
   await app.register(cors, {
@@ -62,6 +66,13 @@ export async function buildApi(
       return { ...p, current_price: market.priceUsd, current_value_usd: currentValue, pnl_pct: pnlPct, symbol: market.symbol ?? null };
     }));
     let walletBalances = null;
+    let walletReadiness = {
+      copyWallet: Boolean(dashboard.wallet?.public_address),
+      signer: false,
+      jupiter: Boolean(config.JUPITER_API_KEY),
+      solReserve: false,
+      usdcBalance: false,
+    };
     if (dashboard.wallet?.public_address) {
       const [solLamports, usdcRaw] = await Promise.all([
         rpc.solBalance(dashboard.wallet.public_address).catch(() => null),
@@ -71,8 +82,57 @@ export async function buildApi(
         sol: solLamports == null ? null : Number(solLamports) / 1e9,
         usdc: usdcRaw == null ? null : Number(usdcRaw) / 1e6,
       };
+      try {
+        const signer = loadSolanaSigner(dashboard.wallet.signer_ref);
+        walletReadiness.signer = signer.publicKey.toBase58() === dashboard.wallet.public_address;
+      } catch {
+        walletReadiness.signer = false;
+      }
+      walletReadiness.solReserve = solLamports != null && solLamports >= 50_000_000n;
+      walletReadiness.usdcBalance = usdcRaw != null && usdcRaw > 0n;
     }
-    return { ...dashboard, positions: enrichedPositions, walletBalances };
+    return { ...dashboard, positions: enrichedPositions, walletBalances, walletReadiness };
+  });
+
+  app.get("/api/activity", async (req) => {
+    const user = await requireUser(req, db);
+    const limit = Number((req.query as any)?.limit ?? 100);
+    return { events: await db.listActivityEvents(user.id, Math.max(1, Math.min(200, limit))) };
+  });
+
+  app.get("/api/events", async (req, reply) => {
+    const user = await requireUserFromHeaderOrQuery(req, db);
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    reply.raw.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+    const unsubscribe = activity.subscribe(user.id, (event) => {
+      reply.raw.write(`event: activity\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+    const keepAlive = setInterval(() => reply.raw.write(": keepalive\n\n"), 25_000);
+    req.raw.on("close", () => {
+      clearInterval(keepAlive);
+      unsubscribe();
+    });
+  });
+
+  app.get("/api/system-health", async (req) => {
+    await requireUser(req, db);
+    const rpcStarted = Date.now();
+    const rpcResult = await rpc.call("getSlot", [{ commitment: "processed" }]).then(
+      (slot) => ({ state: "healthy", slot, latencyMs: Date.now() - rpcStarted }),
+      (error) => ({ state: "down", error: String(error).slice(0, 180), latencyMs: Date.now() - rpcStarted }),
+    );
+    return {
+      ...health.snapshot(),
+      solanaRpc: rpcResult,
+      jupiter: { state: config.JUPITER_API_KEY ? "configured" : "missing_api_key", baseUrl: config.JUPITER_API_BASE },
+      fomoScan: { state: config.FOMOSCAN_API_KEY ? "configured" : "missing_api_key", baseUrl: config.FOMOSCAN_API_BASE },
+    };
   });
   app.get("/api/traders", async (req) => {
     const user = await requireUser(req, db);
@@ -132,19 +192,40 @@ export async function buildApi(
       return reply.status(400).send({ error: "LIVE_REQUIRES_EXPLICIT_CONFIRMATION" });
     }
     if (body?.dryRun === false) {
-      const wallet = await db.getCopyWallet(user.id, "solana");
-      if (!wallet) return reply.status(400).send({ error: "COPY_WALLET_NOT_CONFIGURED" });
-      if (!config.JUPITER_API_KEY) return reply.status(400).send({ error: "JUPITER_API_KEY_REQUIRED_FOR_LIVE" });
-      try {
-        const signer = loadSolanaSigner(wallet.signer_ref);
-        if (signer.publicKey.toBase58() !== wallet.public_address) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
-      } catch (error) {
-        return reply.status(400).send({ error: `LIVE_SIGNER_NOT_READY:${String(error)}` });
-      }
+      const error = await assertLiveReady(config, db, user.id);
+      if (error) return reply.status(400).send({ error });
     }
     const patch = { ...body };
     delete patch.confirmLive;
-    return db.updateCopyConfig(user.id, id, patch);
+    return traders.updateConfig(user.id, id, patch);
+  });
+
+  app.post("/api/trading/live-all", async (req, reply) => {
+    const user = await requireUser(req, db);
+    if ((req.body as any)?.confirmLive !== true) return reply.status(400).send({ error: "LIVE_REQUIRES_EXPLICIT_CONFIRMATION" });
+    const error = await assertLiveReady(config, db, user.id);
+    if (error) return reply.status(400).send({ error });
+    const updated = await db.setAllCopyConfigsMode(user.id, false);
+    await activity.emit({
+      userId: user.id,
+      type: "all_configs_live_enabled",
+      severity: "warning",
+      message: `LIVE mode enabled for ${updated} followed trader${updated === 1 ? "" : "s"}.`,
+      metadata: { updated },
+    });
+    return { ok: true, updated };
+  });
+
+  app.post("/api/trading/paper-all", async (req) => {
+    const user = await requireUser(req, db);
+    const updated = await db.setAllCopyConfigsMode(user.id, true);
+    await activity.emit({
+      userId: user.id,
+      type: "all_configs_paper_enabled",
+      message: `Paper mode enabled for ${updated} followed trader${updated === 1 ? "" : "s"}. Existing live positions remain real.`,
+      metadata: { updated },
+    });
+    return { ok: true, updated };
   });
 
   app.post("/api/positions/:id/exit", async (req) => {
@@ -170,6 +251,14 @@ export async function buildApi(
   return app;
 }
 
+async function requireUserFromHeaderOrQuery(request: any, db: Database) {
+  const queryToken = typeof request.query?.token === "string" ? request.query.token : null;
+  if (queryToken && !request.headers.authorization) {
+    request.headers.authorization = `Bearer ${queryToken}`;
+  }
+  return requireUser(request, db);
+}
+
 function fomoScanHttpError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   const statusCode =
@@ -181,4 +270,17 @@ function fomoScanHttpError(error: unknown) {
     message === "FOMO handle is required" ? 400 :
     500;
   return Object.assign(new Error(message), { statusCode });
+}
+
+async function assertLiveReady(config: AppConfig, db: Database, userId: string) {
+  const wallet = await db.getCopyWallet(userId, "solana");
+  if (!wallet) return "COPY_WALLET_NOT_CONFIGURED";
+  if (!config.JUPITER_API_KEY) return "JUPITER_API_KEY_REQUIRED_FOR_LIVE";
+  try {
+    const signer = loadSolanaSigner(wallet.signer_ref);
+    if (signer.publicKey.toBase58() !== wallet.public_address) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
+  } catch (error) {
+    return `LIVE_SIGNER_NOT_READY:${String(error)}`;
+  }
+  return null;
 }

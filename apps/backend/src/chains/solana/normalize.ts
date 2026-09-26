@@ -28,11 +28,13 @@ function tokenBalance(x: any): TokenAccountBalance | null {
   const mint = typeof x?.mint === "string" ? x.mint : pubkey(x?.mint);
   if (!mint) return null;
   const amount = x?.uiTokenAmount?.amount ?? x?.amount ?? "0";
+  const decimals = x?.uiTokenAmount?.decimals ?? x?.ui_token_amount?.decimals ?? x?.decimals;
   return {
     accountIndex: Number(x.accountIndex ?? x.account_index ?? -1),
     mint,
     owner: typeof x.owner === "string" ? x.owner : pubkey(x.owner) ?? undefined,
     amount: BigInt(String(amount)),
+    decimals: decimals == null ? undefined : Number(decimals),
   };
 }
 

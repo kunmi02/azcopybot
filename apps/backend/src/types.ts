@@ -13,6 +13,7 @@ export interface TradeEvent {
   quoteAmountRaw?: bigint;
   tokenAmountRaw?: bigint;
   preTokenAmountRaw?: bigint;
+  tokenDecimals?: number;
   detectedAt: Date;
   requiresLiquidityCheck?: boolean;
 }

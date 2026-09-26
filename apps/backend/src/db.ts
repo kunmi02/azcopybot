@@ -153,6 +153,20 @@ export class Database {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         confirmed_at TIMESTAMPTZ
       );
+
+      CREATE TABLE IF NOT EXISTS activity_events (
+        id TEXT PRIMARY KEY,
+        user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        trader_id TEXT REFERENCES traders(id) ON DELETE SET NULL,
+        position_id TEXT REFERENCES positions(id) ON DELETE SET NULL,
+        execution_id TEXT REFERENCES executions(id) ON DELETE SET NULL,
+        type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS activity_events_user_created_idx ON activity_events(user_id, created_at DESC);
     `);
   }
 
@@ -366,6 +380,27 @@ export class Database {
     return this.getCopyConfig(id);
   }
 
+  async setAllCopyConfigsMode(userId: string, dryRun: boolean) {
+    const { rows } = await this.pool.query(`
+      UPDATE copy_configs
+      SET dry_run=$2
+      WHERE user_id=$1 AND enabled=true
+      RETURNING id
+    `, [userId, dryRun]);
+    return rows.length;
+  }
+
+  async unfollowCopyConfig(userId: string, id: string) {
+    const { rows } = await this.pool.query(`
+      UPDATE copy_configs c
+      SET enabled=false, dry_run=true
+      FROM traders t
+      WHERE c.id=$1 AND c.user_id=$2 AND t.id=c.trader_id
+      RETURNING c.id, c.trader_id, t.handle, t.display_name
+    `, [id, userId]);
+    return rows[0] ?? null;
+  }
+
   async listUserTraders(userId: string) {
     const { rows } = await this.pool.query(`
       SELECT c.id AS config_id, c.*, t.handle, t.display_name, t.source,
@@ -373,6 +408,19 @@ export class Database {
       FROM copy_configs c JOIN traders t ON t.id=c.trader_id
       LEFT JOIN trader_wallets w ON w.trader_id=t.id AND w.enabled=true
       WHERE c.user_id=$1 AND c.enabled=true
+      GROUP BY c.id,t.id
+      ORDER BY t.display_name
+    `, [userId]);
+    return rows;
+  }
+
+  async listInactiveUserTraders(userId: string) {
+    const { rows } = await this.pool.query(`
+      SELECT c.id AS config_id, c.*, t.handle, t.display_name, t.source,
+        COALESCE(json_agg(json_build_object('chain',w.chain,'address',w.address)) FILTER (WHERE w.id IS NOT NULL),'[]') wallets
+      FROM copy_configs c JOIN traders t ON t.id=c.trader_id
+      LEFT JOIN trader_wallets w ON w.trader_id=t.id AND w.enabled=true
+      WHERE c.user_id=$1 AND c.enabled=false
       GROUP BY c.id,t.id
       ORDER BY t.display_name
     `, [userId]);
@@ -563,6 +611,29 @@ export class Database {
     return id;
   }
 
+  async createActivityEvent(input: {
+    userId?: string | null; traderId?: string | null; positionId?: string | null; executionId?: string | null;
+    type: string; severity: string; message: string; metadata?: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    const { rows } = await this.pool.query(`
+      INSERT INTO activity_events(id,user_id,trader_id,position_id,execution_id,type,severity,message,metadata)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+      RETURNING *
+    `, [
+      id,
+      input.userId ?? null,
+      input.traderId ?? null,
+      input.positionId ?? null,
+      input.executionId ?? null,
+      input.type,
+      input.severity,
+      input.message,
+      JSON.stringify(input.metadata ?? {}),
+    ]);
+    return rows[0];
+  }
+
   async listUnknownExecutions(limit = 50) {
     const { rows } = await this.pool.query(`
       SELECT e.*, cw.id AS copy_wallet_id,cw.public_address,cw.signer_ref
@@ -592,12 +663,23 @@ export class Database {
     return rows;
   }
 
+  async listActivityEvents(userId: string, limit = 100) {
+    const { rows } = await this.pool.query(`
+      SELECT a.*, t.handle,t.display_name FROM activity_events a
+      LEFT JOIN traders t ON t.id=a.trader_id
+      WHERE a.user_id=$1 ORDER BY a.created_at DESC LIMIT $2
+    `, [userId, limit]);
+    return rows;
+  }
+
   async dashboard(userId: string) {
-    const [positions, traders, executions, user, wallet] = await Promise.all([
-      this.listOpenPositions(userId), this.listUserTraders(userId), this.listExecutions(userId, 20),
+    const [positions, traders, inactiveTraders, executions, activity, user, wallet] = await Promise.all([
+      this.listOpenPositions(userId), this.listUserTraders(userId), this.listInactiveUserTraders(userId),
+      this.listExecutions(userId, 20),
+      this.listActivityEvents(userId, 50),
       this.getUserById(userId), this.getCopyWallet(userId, "solana"),
     ]);
-    return { user, wallet, positions, traders, executions };
+    return { user, wallet, positions, traders, inactiveTraders, executions, activity };
   }
 }
 

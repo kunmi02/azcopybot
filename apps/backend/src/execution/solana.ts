@@ -20,6 +20,7 @@ export class SolanaExecutor {
     token: string;
     amountUsd: number;
     slippageBps: number;
+    onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
   }) {
     const signer = loadSolanaSigner(input.signerRef);
     if (signer.publicKey.toBase58() !== input.expectedPublicAddress) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
@@ -30,10 +31,12 @@ export class SolanaExecutor {
     const usdcBalance = await this.rpc.tokenBalanceRaw(input.expectedPublicAddress, SOLANA_USDC);
     if (usdcBalance < inputAmount) throw new Error("INSUFFICIENT_USDC");
     return this.withMissingTokenProgramRetry(async () => {
+      await input.onProgress?.("quote_requested", "Jupiter quote requested", { token: input.token, amountUsd: input.amountUsd });
       const [quote, transferFeeBps] = await Promise.all([
         this.jupiter.quote(SOLANA_USDC, input.token, inputAmount, input.slippageBps),
         this.rpc.transferFeeBps(input.token),
       ]);
+      await input.onProgress?.("quote_received", "Jupiter quote received", { token: input.token, outAmount: quote.outAmount, transferFeeBps });
 
       if (transferFeeBps !== 0) {
         // The supplied spec requires a tested fallback router here. We refuse rather than silently use a dangerous route.
@@ -42,6 +45,7 @@ export class SolanaExecutor {
 
       await this.assertQuoteValue(input.token, BigInt(quote.outAmount), input.amountUsd);
       const swap = await this.jupiter.buildSwap(quote, input.expectedPublicAddress);
+      await input.onProgress?.("transaction_submitting", "Signing and submitting buy transaction", { token: input.token });
       const txHash = await submitSignedTransaction(this.rpc, swap, signer);
       const decimals = await this.rpc.tokenDecimals(input.token);
       const tokenQty = Number(BigInt(quote.outAmount)) / 10 ** decimals;
@@ -57,6 +61,7 @@ export class SolanaExecutor {
     tokenQty: number;
     slippageBps: number;
     expectedUsd: number;
+    onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
   }) {
     const signer = loadSolanaSigner(input.signerRef);
     if (signer.publicKey.toBase58() !== input.expectedPublicAddress) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
@@ -68,15 +73,18 @@ export class SolanaExecutor {
     if (onChainBalance < rawQty) throw new Error("INSUFFICIENT_TOKEN_BALANCE");
 
     return this.withMissingTokenProgramRetry(async () => {
+      await input.onProgress?.("quote_requested", "Jupiter sell quote requested", { token: input.token, tokenQty: input.tokenQty, expectedUsd: input.expectedUsd });
       const [quote, transferFeeBps] = await Promise.all([
         this.jupiter.quote(input.token, SOLANA_USDC, rawQty, input.slippageBps),
         this.rpc.transferFeeBps(input.token),
       ]);
+      await input.onProgress?.("quote_received", "Jupiter sell quote received", { token: input.token, outAmount: quote.outAmount, transferFeeBps });
       if (transferFeeBps !== 0) throw new Error(`TOKEN_2022_TRANSFER_FEE_REQUIRES_FALLBACK:${transferFeeBps}`);
 
       const quotedUsd = Number(BigInt(quote.outAmount)) / 1_000_000;
       if (input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
       const swap = await this.jupiter.buildSwap(quote, input.expectedPublicAddress);
+      await input.onProgress?.("transaction_submitting", "Signing and submitting sell transaction", { token: input.token });
       const txHash = await submitSignedTransaction(this.rpc, swap, signer);
       return { txHash, actualUsd: quotedUsd, executionPrice: quotedUsd / input.tokenQty };
     });
