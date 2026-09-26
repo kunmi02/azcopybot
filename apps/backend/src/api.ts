@@ -27,7 +27,8 @@ export async function buildApi(
 
   app.setErrorHandler((error, _req, reply) => {
     const status = (error as any).statusCode ?? 500;
-    reply.status(status).send({ error: String(error.message ?? error) });
+    const message = error instanceof Error ? error.message : String(error);
+    reply.status(status).send({ error: message });
   });
 
   app.get("/health", async () => ({ ok: true }));
@@ -90,13 +91,21 @@ export async function buildApi(
   app.post("/api/traders/fomo/resolve", async (req) => {
     await requireUser(req, db);
     const handle = String((req.body as any)?.handle ?? "").trim();
-    return traders.resolveFomo(handle);
+    try {
+      return await traders.resolveFomo(handle);
+    } catch (error) {
+      throw fomoScanHttpError(error);
+    }
   });
 
   app.post("/api/traders/fomo", async (req) => {
     const user = await requireUser(req, db);
     const handle = String((req.body as any)?.handle ?? "").trim();
-    return traders.followFomo(user.id, handle);
+    try {
+      return await traders.followFomo(user.id, handle);
+    } catch (error) {
+      throw fomoScanHttpError(error);
+    }
   });
 
   app.delete("/api/configs/:id", async (req) => {
@@ -159,4 +168,17 @@ export async function buildApi(
   });
 
   return app;
+}
+
+function fomoScanHttpError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const statusCode =
+    message === "FOMOSCAN_API_KEY_NOT_CONFIGURED" ? 400 :
+    message.startsWith("FOMOSCAN_NOT_OBSERVED:") ? 404 :
+    message === "FOMOSCAN_QUOTA_EXCEEDED" ? 402 :
+    message === "FOMOSCAN_RATE_LIMITED" ? 429 :
+    message.startsWith("FOMOSCAN_HTTP_401") || message.startsWith("FOMOSCAN_HTTP_403") ? 401 :
+    message === "FOMO handle is required" ? 400 :
+    500;
+  return Object.assign(new Error(message), { statusCode });
 }

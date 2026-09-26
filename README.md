@@ -138,13 +138,36 @@ These are deliberate rather than hidden TODOs:
 
 ## Local setup
 
-### 1. Environment
+### 1. Prerequisites
+
+Use Node 22 locally. The Docker images also use Node 22, and some dependencies warn or fail on older Node versions.
+
+```bash
+node -v
+```
+
+If needed, switch with `nvm`:
+
+```bash
+nvm install 22
+nvm use 22
+```
+
+Install workspace dependencies from the repo root:
+
+```bash
+npm install
+```
+
+If your editor shows errors such as `Cannot find module 'grammy' or its corresponding type declarations`, dependencies have not been installed in the workspace yet, or the editor TypeScript server needs to be restarted after `npm install`.
+
+### 2. Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Fill at minimum:
+Fill at minimum. If you run the full app with Docker Compose, use the Compose service hostname for Postgres:
 
 ```env
 DATABASE_URL=postgres://copybot:copybot@postgres:5432/copybot
@@ -156,7 +179,13 @@ TRITON_GRPC_XTOKEN=...
 SOLANA_RPC_URL=https://...
 ```
 
-### 2. Dedicated copy wallets
+If you run the backend directly on your machine while only Postgres is running in Docker, use localhost instead:
+
+```env
+DATABASE_URL=postgres://copybot:copybot@localhost:5432/copybot
+```
+
+### 3. Dedicated copy wallets
 
 Do not use either person's main wallet. Create a dedicated Solana wallet for each user and fund it with only the amount intended for the bot.
 
@@ -176,7 +205,9 @@ For live trading, each copy wallet should have:
 - USDC for trade capital;
 - at least 0.05 SOL (0.05-0.1 SOL is the target range) for fees/account creation.
 
-### 3. Run
+### 4. Run with Docker Compose
+
+This starts Postgres, the backend API/Telegram worker, and the web app:
 
 ```bash
 docker compose up --build
@@ -185,7 +216,44 @@ docker compose up --build
 - Web UI: `http://localhost:3000`
 - API health: `http://localhost:8080/health`
 
-### 4. Telegram onboarding
+### 5. Run in local dev mode
+
+For faster local iteration, start Postgres in Docker:
+
+```bash
+docker compose up postgres
+```
+
+Then start the backend and web app in separate terminals:
+
+```bash
+npm run dev:backend
+```
+
+```bash
+npm run dev:web
+```
+
+The backend listens on `http://localhost:8080`; the web app listens on `http://localhost:3000`.
+
+The backend dev/start scripts load the repo-root `.env` file automatically. If you run `tsx` manually from `apps/backend`, include the env file yourself:
+
+```bash
+npx tsx --env-file=../../.env src/index.ts
+```
+
+### 6. Verify the setup
+
+Run the typechecker and tests from the repo root:
+
+```bash
+npm run typecheck
+npm test
+```
+
+`npm audit fix --force` is not part of normal local setup. It can introduce breaking dependency changes; review audit output deliberately before changing dependency versions.
+
+### 7. Telegram onboarding
 
 Each allowlisted user opens the same bot and sends:
 

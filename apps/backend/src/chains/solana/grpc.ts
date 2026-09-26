@@ -1,8 +1,34 @@
-import Client, { CommitmentLevel, type SubscribeRequest } from "@triton-one/yellowstone-grpc";
+import * as YellowstoneGrpc from "@triton-one/yellowstone-grpc";
+import type { SubscribeRequest } from "@triton-one/yellowstone-grpc";
 import { normalizeYellowstoneTransaction } from "./normalize.js";
 import type { TransactionSnapshot } from "../../detection/types.js";
 
+const { CommitmentLevel } = YellowstoneGrpc;
+
 export type SnapshotHandler = (snapshot: TransactionSnapshot) => Promise<void> | void;
+
+type YellowstoneStream = {
+  destroy(): void;
+  on(event: string, listener: (...args: any[]) => void): void;
+};
+
+type YellowstoneClient = {
+  connect(): Promise<void>;
+  subscribe(request?: SubscribeRequest): Promise<YellowstoneStream>;
+};
+
+type YellowstoneClientConstructor = new (
+  endpoint: string,
+  xToken: string | undefined,
+  channelOptions: { grpcMaxDecodingMessageSize: number },
+  reconnectOptions: {
+    enabled: boolean;
+    backoff: { initialIntervalMs: number; multiplier: number; maxRetries: number };
+    slotRetention: number;
+  },
+) => YellowstoneClient;
+
+const Client = YellowstoneGrpc.default as unknown as YellowstoneClientConstructor;
 
 export class SolanaGrpcWatcher {
   private stream: any;
