@@ -38,6 +38,19 @@ function mergeActivityEvents(current: any[], incoming: any[]) {
     .slice(0, 80);
 }
 
+function executionStatusLabel(status: string) {
+  if (status === "confirmed") return "Confirmed";
+  if (status === "paper") return "Paper";
+  if (status === "submitted_unknown") return "Status unknown";
+  if (status.startsWith("failed:")) return "Failed";
+  return status.replaceAll("_", " ");
+}
+
+function executionErrorDetail(status: string) {
+  if (!status.startsWith("failed:")) return "";
+  return status.slice("failed:".length).replace(/^Error:\s*/, "");
+}
+
 async function request(path: string, token: string | null, init?: RequestInit) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;
@@ -466,10 +479,21 @@ function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, 
         <div className="miniCards">{paperPositions.map((p) => <PositionCard key={p.id} position={p} onExit={exit} />)}{!paperPositions.length && <p className="muted">No paper positions.</p>}</div>
       </LeaderPanel>
       <LeaderPanel title="Recent executions" count={executions.length}>
-        <div className="table compact leaderExecutions">
+        <div className="executionCards">
           {executions.slice(0, 6).map((e) => {
-            const failed = String(e.status).startsWith("failed");
-            return <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className={failed ? "sell" : "muted"}>{e.status}</span><span className="executionActions">{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : "—"}{failed && <button className="secondary miniButton" disabled={busy} onClick={() => void retryExecution(e)}>Retry</button>}</span></div>;
+            const status = String(e.status ?? "");
+            const failed = status.startsWith("failed");
+            const detail = executionErrorDetail(status);
+            return <article className={`executionCard ${failed ? "failed" : ""}`} key={e.id}>
+              <div className="executionTopline">
+                <span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span>
+                <span className="mono" title={e.token}>{e.token.slice(0,8)}…</span>
+                <span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : e.requested_usd != null ? `$${Number(e.requested_usd).toFixed(2)}` : "—"}</span>
+              </div>
+              <div className="executionMeta"><span>{e.reason}</span><b className={failed ? "sell" : "muted"}>{executionStatusLabel(status)}</b></div>
+              {detail && <details className="executionErrorBox"><summary>View full error</summary><pre>{detail}</pre></details>}
+              <div className="executionActions">{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : <span className="muted">No tx</span>}{failed && <button className="secondary miniButton" disabled={busy} onClick={() => void retryExecution(e)}>Retry</button>}</div>
+            </article>;
           })}
           {!executions.length && <p className="muted">No executions yet.</p>}
         </div>
