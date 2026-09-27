@@ -61,6 +61,7 @@ export default function Home() {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [feedStatus, setFeedStatus] = useState<"connecting" | "live" | "disconnected">("connecting");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [activityRefreshing, setActivityRefreshing] = useState(false);
 
   useEffect(() => setToken(localStorage.getItem("copybot_session")), []);
   useEffect(() => { if (token) { void load(); void loadHealth(); } }, [token]);
@@ -107,13 +108,16 @@ export default function Home() {
     catch (e) { setMessage(String(e)); }
   }
 
-  async function loadActivity() {
+  async function loadActivity(options?: { manual?: boolean }) {
+    if (options?.manual) setActivityRefreshing(true);
     try {
       const result = await request("/api/activity?limit=80", token);
       setActivity((current) => mergeActivityEvents(current, result.events ?? []));
       setLastUpdated(new Date());
     } catch (e) {
       setFeedStatus("disconnected");
+    } finally {
+      if (options?.manual) setActivityRefreshing(false);
     }
   }
 
@@ -160,6 +164,18 @@ export default function Home() {
   async function pause(paused: boolean) {
     await request(`/api/trading/${paused ? "pause" : "resume"}`, token, { method: "POST", body: "{}" });
     await load();
+  }
+
+  async function retryExecution(execution: any) {
+    const action = execution.side === "sell" ? "sell" : "buy";
+    if (!confirm(`Retry failed ${action} for ${execution.token}?${execution.requested_usd ? `
+Amount: $${Number(execution.requested_usd).toFixed(2)}` : ""}`)) return;
+    setBusy(true); setMessage("");
+    try {
+      await request(`/api/executions/${execution.id}/retry`, token, { method: "POST", body: "{}" });
+      await load();
+    } catch (e) { setMessage(String(e)); }
+    finally { setBusy(false); }
   }
 
   async function exit(positionId: string, percentage: number) {
@@ -281,7 +297,13 @@ export default function Home() {
         </div>
       </div>
       <div className="card">
-        <div className="sectionTitle"><h2>Activity feed</h2><span>{feedStatus === "live" ? "Live" : feedStatus === "connecting" ? "Connecting" : "Polling"} · {activity.length} recent{lastUpdated ? ` · updated ${timeAgo(lastUpdated)}` : ""}</span></div>
+        <div className="sectionTitle activityTitle">
+          <h2>Activity feed</h2>
+          <div className="activityControls">
+            <span>{feedStatus === "live" ? "Live" : feedStatus === "connecting" ? "Connecting" : "Polling"} · {activity.length} recent{lastUpdated ? ` · updated ${timeAgo(lastUpdated)}` : ""}</span>
+            <button className="secondary iconButton" disabled={activityRefreshing} aria-label="Refresh activity feed" title="Refresh activity feed" onClick={() => void loadActivity({ manual: true })}>{activityRefreshing ? "…" : "↻"}</button>
+          </div>
+        </div>
         <div className="activityList">
           {activity.slice(0, 12).map((event) => <div className={`activity ${event.severity ?? "info"}`} key={event.id}>
             <span>{formatEventTime(event.created_at)}</span>
@@ -330,6 +352,7 @@ export default function Home() {
           unfollow={unfollow}
           followAgain={followAgain}
           exit={exit}
+          retryExecution={retryExecution}
         />)}
         {data.inactiveTraders?.map((leader) => <LeaderCard
           key={leader.config_id}
@@ -342,6 +365,7 @@ export default function Home() {
           unfollow={unfollow}
           followAgain={followAgain}
           exit={exit}
+          retryExecution={retryExecution}
         />)}
         {!data.traders.length && !(data.inactiveTraders?.length ?? 0) && <p className="muted">No leaders yet.</p>}
       </div>
@@ -360,7 +384,7 @@ function PositionCard({ position: p, onExit }: { position: any; onExit: (id: str
         </article>;
 }
 
-function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, unfollow, followAgain, exit }: {
+function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, unfollow, followAgain, exit, retryExecution }: {
   leader: any;
   dashboard: Dashboard;
   active: boolean;
@@ -370,6 +394,7 @@ function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, 
   unfollow: (id: string, label: string) => Promise<void>;
   followAgain: (id: string, label: string) => Promise<void>;
   exit: (positionId: string, percentage: number) => Promise<void>;
+  retryExecution: (execution: any) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const t = leader;
@@ -442,7 +467,10 @@ function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, 
       </LeaderPanel>
       <LeaderPanel title="Recent executions" count={executions.length}>
         <div className="table compact leaderExecutions">
-          {executions.slice(0, 6).map((e) => <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className={String(e.status).startsWith("failed") ? "sell" : "muted"}>{e.status}</span><span>{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : "—"}</span></div>)}
+          {executions.slice(0, 6).map((e) => {
+            const failed = String(e.status).startsWith("failed");
+            return <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className={failed ? "sell" : "muted"}>{e.status}</span><span className="executionActions">{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : "—"}{failed && <button className="secondary miniButton" disabled={busy} onClick={() => void retryExecution(e)}>Retry</button>}</span></div>;
+          })}
           {!executions.length && <p className="muted">No executions yet.</p>}
         </div>
       </LeaderPanel>

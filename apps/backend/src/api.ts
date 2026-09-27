@@ -11,6 +11,7 @@ import { SOLANA_USDC } from "./execution/solana.js";
 import { loadSolanaSigner } from "./wallet.js";
 import type { ActivityService } from "./services/activity.js";
 import type { HealthService } from "./services/health.js";
+import type { RetryExecutionService } from "./services/retry.js";
 
 export async function buildApi(
   config: AppConfig,
@@ -21,6 +22,7 @@ export async function buildApi(
   rpc: SolanaRpc,
   activity: ActivityService,
   health: HealthService,
+  retryExecutions: RetryExecutionService,
 ) {
   const app = Fastify({ logger: true });
   await app.register(cors, {
@@ -152,6 +154,11 @@ export async function buildApi(
     return db.listExecutions(user.id, 100);
   });
 
+  app.post("/api/executions/:id/retry", async (req) => {
+    const user = await requireUser(req, db);
+    const id = (req.params as any).id as string;
+    return retryExecutions.retry(user.id, id);
+  });
 
   app.post("/api/traders/fomo/resolve", async (req) => {
     await requireUser(req, db);

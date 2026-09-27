@@ -4,6 +4,7 @@ import type { SolanaExecutor } from "../execution/solana.js";
 import type { Notify } from "./copytrade.js";
 import { SubmissionUnknownError } from "../execution/submit.js";
 import type { ActivityService } from "./activity.js";
+import { errorMessage } from "../errors.js";
 
 export class PositionService {
   constructor(
@@ -111,9 +112,10 @@ export class PositionService {
         await this.notify(position.telegram_chat_id, `⚠️ EXIT SUBMITTED — CONFIRMATION UNKNOWN\nTX: ${error.signature}\nThe position is locked from another exit until this is reconciled. Do not retry manually.`);
         return;
       }
+      const failureReason = errorMessage(error, 500);
       const executionId = await this.db.createExecution({
         userId, positionId, traderId: position.trader_id, chain: position.chain, token: position.token,
-        side: "sell", reason, tokenQty: qty, status: `failed:${String(error).slice(0, 180)}`,
+        side: "sell", reason, tokenQty: qty, status: `failed:${failureReason.slice(0, 180)}`,
       });
       await this.activity.emit({
         userId,
@@ -122,10 +124,14 @@ export class PositionService {
         executionId,
         type: "sell_failed",
         severity: "error",
-        message: `EXIT FAILED for ${market.symbol ?? position.token}: ${String(error).slice(0, 180)}`,
-        metadata: { token: position.token, percentage, reason },
+        message: `EXIT FAILED for ${market.symbol ?? position.token}: ${failureReason.slice(0, 180)}`,
+        metadata: { token: position.token, percentage, reason, error: failureReason },
       });
-      await this.notify(position.telegram_chat_id, `🚨 EXIT FAILED — POSITION STILL OPEN\n${market.symbol ?? position.token}\nReason: ${String(error)}\nUse the dashboard to retry or inspect before submitting again.`);
+      await this.notify(
+        position.telegram_chat_id,
+        `🚨 EXIT FAILED — POSITION STILL OPEN\n${market.symbol ?? position.token}\nReason: ${failureReason}\nUse the dashboard to retry or inspect before submitting again.`,
+        [[{ text: "Retry sell", callback_data: `retry_execution:${executionId}` }]],
+      );
       throw error;
     }
   }

@@ -4,6 +4,7 @@ import type { DexScreenerPriceService } from "./pricing.js";
 import type { SolanaExecutor } from "../execution/solana.js";
 import { SubmissionUnknownError } from "../execution/submit.js";
 import type { ActivityService } from "./activity.js";
+import { errorMessage } from "../errors.js";
 
 export type Notify = (chatId: string, text: string, buttons?: Array<Array<{ text: string; callback_data: string }>>) => Promise<void>;
 
@@ -184,10 +185,11 @@ export class CopyTradeService {
         );
         return;
       }
+      const failureReason = errorMessage(error, 500);
       const executionId = await this.db.createExecution({
         userId: config.userId, traderId: config.traderId, sourceTxHash: event.txHash,
         chain: "solana", token: event.token, side: "buy", reason: `COPY_${kind.toUpperCase()}`,
-        requestedUsd: config.tradeAmountUsd, status: `failed:${String(error).slice(0, 180)}`,
+        requestedUsd: config.tradeAmountUsd, status: `failed:${failureReason.slice(0, 180)}`,
       });
       await this.activity.emit({
         userId: config.userId,
@@ -195,8 +197,8 @@ export class CopyTradeService {
         executionId,
         type: "buy_failed",
         severity: "error",
-        message: `COPY FAILED for ${event.token}: ${String(error).slice(0, 180)}`,
-        metadata: { token: event.token, sourceTxHash: event.txHash },
+        message: `COPY FAILED for ${event.token}: ${failureReason.slice(0, 180)}`,
+        metadata: { token: event.token, sourceTxHash: event.txHash, error: failureReason },
       });
       await this.notify(config.chatId,
         `🔴 Live buy failed\n` +
@@ -205,6 +207,7 @@ export class CopyTradeService {
         `Attempted amount: $${config.tradeAmountUsd.toFixed(2)}\n` +
         `Reason: ${humanError(error)}\n` +
         `Source tx: ${solscanTx(event.txHash)}`,
+        [[{ text: "Retry buy", callback_data: `retry_execution:${executionId}` }]],
       );
     }
   }
@@ -229,5 +232,5 @@ function formatNumber(value: number, symbol?: string) {
 }
 
 function humanError(error: unknown) {
-  return String(error).replace(/^Error:\s*/, "").slice(0, 240);
+  return errorMessage(error, 240);
 }

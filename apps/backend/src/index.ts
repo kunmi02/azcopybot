@@ -15,6 +15,7 @@ import { buildApi } from "./api.js";
 import { SubmissionReconciler } from "./services/reconcile.js";
 import { ActivityService } from "./services/activity.js";
 import { HealthService } from "./services/health.js";
+import { RetryExecutionService } from "./services/retry.js";
 
 const config = loadConfig();
 const db = new Database(config.DATABASE_URL);
@@ -55,13 +56,14 @@ const notify = async (chatId: string, text: string, buttons?: Array<Array<{ text
 
 const positions = new PositionService(db, prices, executor, notify, activity);
 const copyTrade = new CopyTradeService(db, prices, executor, notify, activity);
+const retryExecutions = new RetryExecutionService(db, prices, executor, positions, notify, activity);
 engine = new TradingEngine(db, prices, copyTrade, positions, notify, () => watched, activity, health);
 const fomoscan = new FomoScanClient(config.FOMOSCAN_API_BASE, config.FOMOSCAN_API_KEY);
 const traders = new TraderService(db, fomoscan, refreshWatchers, activity);
-telegram = new TelegramController(config, db, traders, positions, rpc);
+telegram = new TelegramController(config, db, traders, positions, rpc, retryExecutions);
 const reconciler = new SubmissionReconciler(db, rpc, notify);
 
-const api = await buildApi(config, db, traders, positions, prices, rpc, activity, health);
+const api = await buildApi(config, db, traders, positions, prices, rpc, activity, health, retryExecutions);
 await api.listen({ host: "0.0.0.0", port: config.API_PORT });
 await telegram.start();
 health.markTelegramStarted();

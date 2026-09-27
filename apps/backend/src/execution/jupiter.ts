@@ -1,3 +1,4 @@
+import { apiErrorMessage } from "../errors.js";
 export interface JupiterQuote {
   inputMint: string;
   outputMint: string;
@@ -23,7 +24,7 @@ export class JupiterClient {
     const qs = new URLSearchParams({ inputMint, outputMint, amount: amount.toString(), slippageBps: String(slippageBps), instructionVersion: "V2" });
     const res = await fetch(`${this.baseUrl}/quote?${qs}`, { headers: this.headers() });
     const body: any = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body?.error ?? body?.message ?? `JUPITER_QUOTE_${res.status}`);
+    if (!res.ok) throw new Error(apiErrorMessage("JUPITER_QUOTE", res.status, body));
     return body as JupiterQuote;
   }
 
@@ -42,7 +43,7 @@ export class JupiterClient {
     });
     const body: any = await res.json().catch(() => ({}));
     if (!res.ok || !body.swapTransaction) {
-      throw new Error(body?.error ?? body?.message ?? `JUPITER_SWAP_${res.status}`);
+      throw new Error(apiErrorMessage("JUPITER_SWAP", res.status, body));
     }
     return String(body.swapTransaction);
   }

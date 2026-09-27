@@ -654,6 +654,17 @@ export class Database {
     `, [id,patch.status,patch.actualUsd ?? null,patch.tokenQty ?? null,patch.executionPrice ?? null,patch.positionId ?? null]);
   }
 
+
+  async getExecutionForUser(userId: string, id: string) {
+    const { rows } = await this.pool.query(`
+      SELECT e.*, t.handle,t.display_name,u.telegram_chat_id FROM executions e
+      JOIN users u ON u.id=e.user_id
+      LEFT JOIN traders t ON t.id=e.trader_id
+      WHERE e.user_id=$1 AND e.id=$2
+    `, [userId, id]);
+    return rows[0] ?? null;
+  }
+
   async listExecutions(userId: string, limit = 100) {
     const { rows } = await this.pool.query(`
       SELECT e.*, t.handle,t.display_name FROM executions e

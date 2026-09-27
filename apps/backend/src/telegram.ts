@@ -7,6 +7,7 @@ import { randomLoginCode } from "./auth.js";
 import { loadSolanaSigner } from "./wallet.js";
 import type { SolanaRpc } from "./chains/solana/rpc.js";
 import { SOLANA_USDC } from "./execution/solana.js";
+import type { RetryExecutionService } from "./services/retry.js";
 
 export class TelegramController {
   readonly bot: Bot;
@@ -17,6 +18,7 @@ export class TelegramController {
     private readonly traders: TraderService,
     private readonly positions: PositionService,
     private readonly rpc: SolanaRpc,
+    private readonly retryExecutions: RetryExecutionService,
   ) {
     this.bot = new Bot(config.TELEGRAM_BOT_TOKEN);
     this.registerHandlers();
@@ -333,6 +335,17 @@ export class TelegramController {
       try {
         await this.positions.exit(user.id, positionId, pct, "MANUAL_EXIT");
         await ctx.answerCallbackQuery({ text: `Exit ${pct}% requested` });
+      } catch (error) {
+        await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
+      }
+    });
+
+    this.bot.callbackQuery(/^retry_execution:(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      try {
+        await this.retryExecutions.retry(user.id, ctx.match[1]);
+        await ctx.answerCallbackQuery({ text: "Retry requested" });
       } catch (error) {
         await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
       }
