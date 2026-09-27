@@ -50,7 +50,7 @@ services:
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-${SERVICE_URL_WEB_3000}}
 
       # Database is private inside the Compose network.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-copybot}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-copybot}
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-copybot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-copybot}"
 
       # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
