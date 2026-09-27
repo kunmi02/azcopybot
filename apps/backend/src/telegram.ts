@@ -56,6 +56,7 @@ export class TelegramController {
         { command: "liveall", description: "Request live mode for all followed traders" },
         { command: "paperall", description: "Return all followed traders to paper mode" },
         { command: "topups", description: "Toggle top-up copying for a config" },
+        { command: "exits", description: "Toggle leader exit mirroring for a config" },
         { command: "pause", description: "Pause new copied entries" },
         { command: "resume", description: "Resume automatic copying" },
         { command: "help", description: "Show commands" },
@@ -153,6 +154,8 @@ export class TelegramController {
         const kb = new InlineKeyboard()
           .text(r.copy_topups ? "Turn top-ups off" : "Copy top-ups", `topups:${r.copy_topups ? "off" : "on"}:${r.config_id}`)
           .row()
+          .text(r.mirror_exits ? "Mirror exits off" : "Mirror exits on", `exits:${r.mirror_exits ? "off" : "on"}:${r.config_id}`)
+          .row()
           .text(r.dry_run ? "Enable live" : "Paper mode", r.dry_run ? `confirm_live:${r.config_id}` : `paper:${r.config_id}`)
           .text("Unfollow", `unfollow:${r.config_id}`);
         await ctx.reply(
@@ -161,6 +164,7 @@ export class TelegramController {
           `Mode: ${r.dry_run ? "PAPER" : "LIVE"}\n` +
           `Entry size: $${Number(r.trade_amount_usd).toFixed(2)}\n` +
           `Top-ups: ${r.copy_topups ? "ON — copied as another fixed-size buy" : "OFF — skipped"}\n` +
+          `Mirror exits: ${r.mirror_exits ? "ON — sell your matching position when leader fully exits" : "OFF — notify only"}\n` +
           `TP: ${r.take_profit_pct ?? "off"}% · SL: ${r.stop_loss_pct ?? "off"}%`,
           { reply_markup: kb },
         );
@@ -299,6 +303,26 @@ export class TelegramController {
       await ctx.editMessageText(`Top-up copying is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader adds more to an existing token, CopyBot will treat it as another fixed-size entry using your configured amount." : "Leader top-ups will be detected but skipped."}`);
     });
 
+    this.bot.command("exits", async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const [id, state] = String(ctx.match ?? "").trim().split(/\s+/);
+      if (!id || !["on", "off"].includes(state)) return void ctx.reply("Usage: /exits <config-id> on|off");
+      const updated = await this.db.updateCopyConfig(user.id, id, { mirrorExits: state === "on" });
+      await ctx.reply(updated ? `Mirror exits is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader fully exits a token, CopyBot will attempt to sell your matching open position. Partial leader sells still notify only." : "Leader exits will notify only; your positions remain managed by TP/SL/manual exits."}` : "Config not found.");
+    });
+
+    this.bot.callbackQuery(/^exits:(on|off):(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const state = ctx.match[1] as "on" | "off";
+      const id = ctx.match[2];
+      const updated = await this.db.updateCopyConfig(user.id, id, { mirrorExits: state === "on" });
+      if (!updated) return void ctx.answerCallbackQuery({ text: "Config not found", show_alert: true });
+      await ctx.answerCallbackQuery({ text: `Mirror exits ${state.toUpperCase()}` });
+      await ctx.editMessageText(`Mirror exits is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader fully exits a token, CopyBot will attempt to sell your matching open position. Partial leader sells still notify only." : "Leader exits will notify only; your positions remain managed by TP/SL/manual exits."}`);
+    });
+
     this.bot.command("paperall", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
@@ -396,7 +420,7 @@ export class TelegramController {
 
     this.bot.callbackQuery("noop", (ctx) => ctx.answerCallbackQuery());
 
-    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall · /topups <config-id> on|off"));
+    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall · /topups <config-id> on|off · /exits <config-id> on|off"));
   }
 }
 

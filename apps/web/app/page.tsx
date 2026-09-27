@@ -415,6 +415,7 @@ function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, 
   const [takeProfitPct, setTakeProfitPct] = useState(t.take_profit_pct == null ? "" : String(t.take_profit_pct));
   const [stopLossPct, setStopLossPct] = useState(t.stop_loss_pct == null ? "" : String(t.stop_loss_pct));
   const [copyTopups, setCopyTopups] = useState(Boolean(t.copy_topups));
+  const [mirrorExits, setMirrorExits] = useState(Boolean(t.mirror_exits));
   const label = t.handle ? `@${t.handle}` : t.display_name;
   const leaderPositions = dashboard.positions.filter((p) => p.trader_id === t.trader_id);
   const livePositions = leaderPositions.filter((p) => p.mode === "live");
@@ -427,6 +428,7 @@ function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, 
       takeProfitPct: takeProfitPct ? Number(takeProfitPct) : null,
       stopLossPct: stopLossPct ? Number(stopLossPct) : null,
       copyTopups,
+      mirrorExits,
     });
     setEditing(false);
   }
@@ -463,11 +465,13 @@ function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, 
         <label>TP %<input type="number" value={takeProfitPct} onChange={(e) => setTakeProfitPct(e.target.value)} /></label>
         <label>SL %<input type="number" value={stopLossPct} onChange={(e) => setStopLossPct(e.target.value)} /></label>
         <label className="checkSetting"><input type="checkbox" checked={copyTopups} onChange={(e) => setCopyTopups(e.target.checked)} /> Copy top-ups as new $ amount buys</label>
+        <label className="checkSetting"><input type="checkbox" checked={mirrorExits} onChange={(e) => setMirrorExits(e.target.checked)} /> Mirror full exits: sell when leader fully exits</label>
       </> : <>
         <SettingValue label="$ / entry" value={`$${Number(t.trade_amount_usd).toFixed(2)}`} />
         <SettingValue label="TP" value={t.take_profit_pct == null ? "off" : `${t.take_profit_pct}%`} />
         <SettingValue label="SL" value={t.stop_loss_pct == null ? "off" : `${t.stop_loss_pct}%`} />
         <SettingValue label="Top-ups" value={t.copy_topups ? "copy as new buy" : "skip"} />
+        <SettingValue label="Mirror exits" value={t.mirror_exits ? "sell on full exit" : "notify only"} />
       </>}
     </div>
 
