@@ -60,7 +60,7 @@ const retryExecutions = new RetryExecutionService(db, prices, executor, position
 engine = new TradingEngine(db, prices, copyTrade, positions, notify, () => watched, activity, health);
 const fomoscan = new FomoScanClient(config.FOMOSCAN_API_BASE, config.FOMOSCAN_API_KEY);
 const traders = new TraderService(db, fomoscan, refreshWatchers, activity);
-telegram = new TelegramController(config, db, traders, positions, rpc, retryExecutions);
+telegram = new TelegramController(config, db, traders, positions, prices, rpc, retryExecutions);
 const reconciler = new SubmissionReconciler(db, rpc, notify);
 
 const api = await buildApi(config, db, traders, positions, prices, rpc, activity, health, retryExecutions);

@@ -3,6 +3,7 @@ import type { AppConfig } from "./config.js";
 import type { Database } from "./db.js";
 import type { TraderService } from "./services/traders.js";
 import type { PositionService } from "./services/positions.js";
+import type { DexScreenerPriceService } from "./services/pricing.js";
 import { randomLoginCode } from "./auth.js";
 import { loadSolanaSigner } from "./wallet.js";
 import type { SolanaRpc } from "./chains/solana/rpc.js";
@@ -17,6 +18,7 @@ export class TelegramController {
     private readonly db: Database,
     private readonly traders: TraderService,
     private readonly positions: PositionService,
+    private readonly prices: DexScreenerPriceService,
     private readonly rpc: SolanaRpc,
     private readonly retryExecutions: RetryExecutionService,
   ) {
@@ -195,8 +197,40 @@ export class TelegramController {
       const rows = await this.db.listOpenPositions(user.id);
       if (!rows.length) return void ctx.reply("No open positions.");
       for (const p of rows) {
-        const kb = new InlineKeyboard().text("Sell 50%", `exit:50:${p.id}`).text("Sell all", `exit:100:${p.id}`);
-        await ctx.reply(`${p.mode === "paper" ? "🟡" : "🟢"} ${p.token}\nCost: $${Number(p.cost_usd).toFixed(2)}\nEntry: $${Number(p.avg_entry_price)}\nSource: ${p.handle ? `@${p.handle}` : p.display_name}`, { reply_markup: kb });
+        const market = await this.prices.getTokenMarket(p.token).catch(() => null);
+        const qty = Number(p.qty);
+        const cost = Number(p.cost_usd);
+        const currentValue = market ? qty * market.priceUsd : null;
+        const pnlPct = currentValue == null || cost <= 0 ? null : ((currentValue - cost) / cost) * 100;
+        const symbol = market?.symbol ?? shortAddress(p.token);
+        const source = p.handle ? `@${p.handle}` : p.display_name;
+        const kb = new InlineKeyboard()
+          .text(p.mode === "paper" ? "Close 25%" : "Sell 25%", `exit:25:${p.id}`)
+          .text(p.mode === "paper" ? "Close 50%" : "Sell 50%", `exit:50:${p.id}`).row()
+          .text(p.mode === "paper" ? "Close 75%" : "Sell 75%", `exit:75:${p.id}`)
+          .text(p.mode === "paper" ? "Close 100%" : "Sell 100%", `exit:100:${p.id}`);
+        await ctx.reply(
+          `${p.mode === "paper" ? "🟡 PAPER" : "🟢 LIVE"} position — ${symbol}
+` +
+          `Token: ${shortAddress(p.token)}
+` +
+          `Source: ${source}
+` +
+          `Cost: $${cost.toFixed(2)}
+` +
+          `Value: ${currentValue == null ? "unknown" : `$${currentValue.toFixed(2)}`}
+` +
+          `PnL: ${pnlPct == null ? "unknown" : `${pnlPct.toFixed(1)}%`}
+` +
+          `Entry: $${Number(p.avg_entry_price).toPrecision(6)}
+` +
+          `Current: ${market ? `$${market.priceUsd.toPrecision(6)}` : "unknown"}
+` +
+          `TP: ${p.take_profit_pct ?? "off"}% · SL: ${p.stop_loss_pct ?? "off"}%
+` +
+          `${positionDistanceText(p, pnlPct)}`,
+          { reply_markup: kb },
+        );
       }
     });
 
@@ -364,4 +398,15 @@ export class TelegramController {
 
     this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall · /topups <config-id> on|off"));
   }
+}
+
+function shortAddress(value: string) {
+  return value.length <= 16 ? value : `${value.slice(0, 6)}…${value.slice(-6)}`;
+}
+
+function positionDistanceText(p: any, pnlPct: number | null) {
+  if (pnlPct == null) return "TP/SL distance unavailable until pricing loads.";
+  const tp = p.take_profit_pct == null ? "TP off" : `TP ${Number(p.take_profit_pct).toFixed(1)}% · ${(Number(p.take_profit_pct) - pnlPct).toFixed(1)}% remaining`;
+  const sl = p.stop_loss_pct == null ? "SL off" : `SL -${Number(p.stop_loss_pct).toFixed(1)}% · ${(pnlPct + Number(p.stop_loss_pct)).toFixed(1)}% buffer`;
+  return `PnL ${pnlPct.toFixed(1)}% | ${tp} | ${sl}`;
 }
