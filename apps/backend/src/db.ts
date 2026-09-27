@@ -85,7 +85,7 @@ export class Database {
         slippage_bps INTEGER NOT NULL DEFAULT 300,
         copy_new_entries BOOLEAN NOT NULL DEFAULT true,
         copy_topups BOOLEAN NOT NULL DEFAULT false,
-        mirror_exits BOOLEAN NOT NULL DEFAULT false,
+        mirror_exits BOOLEAN NOT NULL DEFAULT true,
         take_profit_pct DOUBLE PRECISION DEFAULT 30,
         stop_loss_pct DOUBLE PRECISION DEFAULT 15,
         max_hold_seconds INTEGER DEFAULT 14400,
@@ -168,6 +168,7 @@ export class Database {
       );
       CREATE INDEX IF NOT EXISTS activity_events_user_created_idx ON activity_events(user_id, created_at DESC);
     `);
+    await this.pool.query(`ALTER TABLE copy_configs ALTER COLUMN mirror_exits SET DEFAULT true`);
   }
 
   async upsertTelegramUser(input: { telegramUserId: string; chatId: string; displayName: string }) {
@@ -342,8 +343,8 @@ export class Database {
     );
     const id = existing.rows[0]?.id ?? randomUUID();
     await this.pool.query(`
-      INSERT INTO copy_configs(id,user_id,trader_id,trading_wallet_id)
-      VALUES($1,$2,$3,$4)
+      INSERT INTO copy_configs(id,user_id,trader_id,trading_wallet_id,mirror_exits)
+      VALUES($1,$2,$3,$4,true)
       ON CONFLICT(user_id,trader_id) DO UPDATE SET enabled=true
     `, [id, userId, traderId, wallet?.id ?? null]);
     return this.getCopyConfig(id);
