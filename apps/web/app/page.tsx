@@ -51,6 +51,21 @@ function executionErrorDetail(status: string) {
   return status.slice("failed:".length).replace(/^Error:\s*/, "");
 }
 
+
+function eventTxHash(event: any) {
+  return event?.metadata?.txHash ?? event?.metadata?.sourceTxHash ?? event?.txHash ?? null;
+}
+
+function activityDetail(event: any) {
+  const reason = event?.metadata?.reason;
+  const token = event?.metadata?.token;
+  return [reason ? `Reason: ${String(reason).replaceAll("_", " ").toLowerCase()}` : "", token ? `Token: ${shortToken(token)}` : ""].filter(Boolean).join(" · ");
+}
+
+function shortToken(value: string) {
+  return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
+}
+
 async function request(path: string, token: string | null, init?: RequestInit) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;
@@ -318,11 +333,16 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}` : ""}`)) return;
           </div>
         </div>
         <div className="activityList">
-          {activity.slice(0, 12).map((event) => <div className={`activity ${event.severity ?? "info"}`} key={event.id}>
-            <span>{formatEventTime(event.created_at)}</span>
-            <b>{event.type?.replaceAll("_", " ")}</b>
-            <p>{event.message}</p>
-          </div>)}
+          {activity.slice(0, 12).map((event) => {
+            const txHash = eventTxHash(event);
+            const detail = activityDetail(event);
+            return <div className={`activity ${event.severity ?? "info"}`} key={event.id}>
+              <span>{formatEventTime(event.created_at)}</span>
+              <b>{event.type?.replaceAll("_", " ")}</b>
+              <p>{event.message}</p>
+              {(detail || txHash) && <div className="activityMeta">{detail && <span>{detail}</span>}{txHash && <a href={`https://solscan.io/tx/${txHash}`} target="_blank" rel="noreferrer">Solscan</a>}</div>}
+            </div>;
+          })}
           {!activity.length && <p className="muted">No activity yet. The feed will update as chain events, copies, skips, and errors happen.</p>}
         </div>
       </div>

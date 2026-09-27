@@ -40,6 +40,12 @@ export class TradingEngine {
       }
       const tracked = new Set(await this.db.listOpenLeaderTokens(trader.id, snapshot.chain));
       const candidates = detectForWallet(snapshot, wallet, tracked);
+      let emittedClassifiedEvent = false;
+
+      if (!candidates.length) {
+        await this.emitIgnoredTransaction(configs, trader.id, snapshot, wallet, "NO_COPYABLE_BALANCE_DELTA");
+        continue;
+      }
 
       for (const candidate of candidates) {
         if (candidate.requiresLiquidityCheck) {
@@ -52,7 +58,7 @@ export class TradingEngine {
                 type: "copy_skipped",
                 severity: "warning",
                 message: `Skipped ${candidate.token}: insufficient liquidity for payment-less receive`,
-                metadata: { chain: snapshot.chain, txHash: snapshot.txHash, token: candidate.token, liquidityUsd: market?.liquidityUsd ?? null },
+                metadata: { chain: snapshot.chain, txHash: snapshot.txHash, token: candidate.token, liquidityUsd: market?.liquidityUsd ?? null, reason: "INSUFFICIENT_LIQUIDITY_FOR_PAYMENTLESS_RECEIVE" },
               });
             }
             continue;
@@ -73,7 +79,11 @@ export class TradingEngine {
           detectedAt: new Date(),
           requiresLiquidityCheck: candidate.requiresLiquidityCheck,
         };
-        if (!(await this.db.insertSeenTrade(event, dedupeKey(event)))) continue;
+        if (!(await this.db.insertSeenTrade(event, dedupeKey(event)))) {
+          await this.emitIgnoredTransaction(configs, trader.id, snapshot, wallet, "DUPLICATE_TRADE_EVENT", event.token);
+          continue;
+        }
+        emittedClassifiedEvent = true;
 
         if (event.classification === "buy") {
           const observedKind = (candidate.preTokenAmountRaw ?? 0n) === 0n ? "new_entry" : "top_up";
@@ -170,6 +180,29 @@ export class TradingEngine {
           }
         }
       }
+
+      if (!emittedClassifiedEvent) {
+        await this.emitIgnoredTransaction(configs, trader.id, snapshot, wallet, "ONLY_NON_COPYABLE_ACTIVITY");
+      }
+    }
+  }
+
+  private async emitIgnoredTransaction(
+    configs: Array<{ userId: string; traderHandle: string | null; traderName: string }>,
+    traderId: string,
+    snapshot: TransactionSnapshot,
+    wallet: string,
+    reason: string,
+    token?: string,
+  ) {
+    for (const config of configs) {
+      await this.activity.emit({
+        userId: config.userId,
+        traderId,
+        type: "transaction_ignored",
+        message: `Ignored transaction for ${config.traderHandle ? `@${config.traderHandle}` : config.traderName}: no copyable buy/sell detected`,
+        metadata: { chain: snapshot.chain, txHash: snapshot.txHash, wallet, reason, token: token ?? null },
+      });
     }
   }
 }
