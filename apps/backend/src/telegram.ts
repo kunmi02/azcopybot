@@ -51,6 +51,7 @@ export class TelegramController {
         { command: "paper", description: "Return a config to paper mode" },
         { command: "liveall", description: "Request live mode for all followed traders" },
         { command: "paperall", description: "Return all followed traders to paper mode" },
+        { command: "topups", description: "Toggle top-up copying for a config" },
         { command: "pause", description: "Pause new copied entries" },
         { command: "resume", description: "Resume automatic copying" },
         { command: "help", description: "Show commands" },
@@ -144,8 +145,22 @@ export class TelegramController {
       if (!user) return;
       const rows = await this.db.listUserTraders(user.id);
       if (!rows.length) return void ctx.reply("You are not following any traders yet.");
-      const text = rows.map((r: any) => `${r.enabled ? "🟢" : "⚪"} ${r.handle ? `@${r.handle}` : r.display_name}\nConfig ${r.config_id.slice(0, 8)} · $${Number(r.trade_amount_usd).toFixed(2)} · ${r.dry_run ? "PAPER" : "LIVE"}`).join("\n\n");
-      await ctx.reply(text);
+      for (const r of rows) {
+        const kb = new InlineKeyboard()
+          .text(r.copy_topups ? "Turn top-ups off" : "Copy top-ups", `topups:${r.copy_topups ? "off" : "on"}:${r.config_id}`)
+          .row()
+          .text(r.dry_run ? "Enable live" : "Paper mode", r.dry_run ? `confirm_live:${r.config_id}` : `paper:${r.config_id}`)
+          .text("Unfollow", `unfollow:${r.config_id}`);
+        await ctx.reply(
+          `${r.enabled ? "🟢" : "⚪"} ${r.handle ? `@${r.handle}` : r.display_name}\n` +
+          `Config: ${r.config_id}\n` +
+          `Mode: ${r.dry_run ? "PAPER" : "LIVE"}\n` +
+          `Entry size: $${Number(r.trade_amount_usd).toFixed(2)}\n` +
+          `Top-ups: ${r.copy_topups ? "ON — copied as another fixed-size buy" : "OFF — skipped"}\n` +
+          `TP: ${r.take_profit_pct ?? "off"}% · SL: ${r.stop_loss_pct ?? "off"}%`,
+          { reply_markup: kb },
+        );
+      }
     });
 
     this.bot.command("unfollow", async (ctx) => {
@@ -158,6 +173,17 @@ export class TelegramController {
         await ctx.reply("Trader unfollowed. Its config was returned to PAPER and disabled.");
       } catch (error) {
         await ctx.reply(`Could not unfollow: ${String(error)}`);
+      }
+    });
+
+    this.bot.callbackQuery(/^unfollow:(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      try {
+        const result = await this.traders.unfollow(user.id, ctx.match[1]);
+        await ctx.editMessageText(`Trader unfollowed: ${result.trader}. Existing positions remain manageable.`);
+      } catch (error) {
+        await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
       }
     });
 
@@ -207,6 +233,34 @@ export class TelegramController {
       if (!id) return void ctx.reply("Usage: /paper <config-id>");
       const updated = await this.db.updateCopyConfig(user.id, id, { dryRun: true });
       await ctx.reply(updated ? "Config returned to PAPER mode." : "Config not found.");
+    });
+
+    this.bot.callbackQuery(/^paper:(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const updated = await this.db.updateCopyConfig(user.id, ctx.match[1], { dryRun: true });
+      if (!updated) return void ctx.answerCallbackQuery({ text: "Config not found", show_alert: true });
+      await ctx.editMessageText("Config returned to PAPER mode. Future entries are simulated; existing live positions remain real.");
+    });
+
+    this.bot.command("topups", async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const [id, state] = String(ctx.match ?? "").trim().split(/\s+/);
+      if (!id || !["on", "off"].includes(state)) return void ctx.reply("Usage: /topups <config-id> on|off");
+      const updated = await this.db.updateCopyConfig(user.id, id, { copyTopups: state === "on" });
+      await ctx.reply(updated ? `Top-up copying is now ${state.toUpperCase()} for this config.` : "Config not found.");
+    });
+
+    this.bot.callbackQuery(/^topups:(on|off):(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const state = ctx.match[1] as "on" | "off";
+      const id = ctx.match[2];
+      const updated = await this.db.updateCopyConfig(user.id, id, { copyTopups: state === "on" });
+      if (!updated) return void ctx.answerCallbackQuery({ text: "Config not found", show_alert: true });
+      await ctx.answerCallbackQuery({ text: `Top-ups ${state.toUpperCase()}` });
+      await ctx.editMessageText(`Top-up copying is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader adds more to an existing token, CopyBot will treat it as another fixed-size entry using your configured amount." : "Leader top-ups will be detected but skipped."}`);
     });
 
     this.bot.command("paperall", async (ctx) => {
@@ -295,6 +349,6 @@ export class TelegramController {
 
     this.bot.callbackQuery("noop", (ctx) => ctx.answerCallbackQuery());
 
-    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall"));
+    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall · /topups <config-id> on|off"));
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
@@ -197,9 +197,6 @@ export default function Home() {
   const paperCount = useMemo(() => data?.positions.filter((p) => p.mode === "paper").length ?? 0, [data]);
   const livePositions = useMemo(() => data?.positions.filter((p) => p.mode === "live") ?? [], [data]);
   const paperPositions = useMemo(() => data?.positions.filter((p) => p.mode === "paper") ?? [], [data]);
-  const liveGroups = useMemo(() => groupByTrader(livePositions), [livePositions]);
-  const paperGroups = useMemo(() => groupByTrader(paperPositions), [paperPositions]);
-  const executionGroups = useMemo(() => groupByTrader(data?.executions ?? []), [data?.executions]);
   const liveReady = Boolean(data?.walletReadiness && Object.values(data.walletReadiness).every(Boolean));
 
   if (!token) {
@@ -291,66 +288,36 @@ export default function Home() {
     </section>
 
     <section className="card">
-      <div className="sectionTitle"><h2>Following</h2><span>{data.traders.length} configs</span></div>
-      <div className="table">
-        {data.traders.map((t) => <FollowingRow key={t.config_id} trader={t} dashboard={data} liveReady={liveReady} busy={busy} updateConfig={updateConfig} unfollow={unfollow} />)}
-        {!data.traders.length && <p className="muted">No traders yet.</p>}
+      <div className="sectionTitle"><h2>Leaders</h2><span>{data.traders.length} following · {data.inactiveTraders?.length ?? 0} inactive</span></div>
+      <div className="leaderList">
+        {data.traders.map((leader) => <LeaderCard
+          key={leader.config_id}
+          leader={leader}
+          dashboard={data}
+          active
+          liveReady={liveReady}
+          busy={busy}
+          updateConfig={updateConfig}
+          unfollow={unfollow}
+          followAgain={followAgain}
+          exit={exit}
+        />)}
+        {data.inactiveTraders?.map((leader) => <LeaderCard
+          key={leader.config_id}
+          leader={leader}
+          dashboard={data}
+          active={false}
+          liveReady={liveReady}
+          busy={busy}
+          updateConfig={updateConfig}
+          unfollow={unfollow}
+          followAgain={followAgain}
+          exit={exit}
+        />)}
+        {!data.traders.length && !(data.inactiveTraders?.length ?? 0) && <p className="muted">No leaders yet.</p>}
       </div>
-    </section>
-
-    {(data.inactiveTraders?.length ?? 0) > 0 && <section className="card">
-      <div className="sectionTitle"><h2>Previously followed</h2><span>{data.inactiveTraders?.length ?? 0}</span></div>
-      <div className="table">
-        {data.inactiveTraders?.map((t) => {
-          const label = t.handle ? `@${t.handle}` : t.display_name;
-          return <div className="row inactiveRow" key={t.config_id}>
-            <div><b>{label}</b><div className="muted mono">{t.wallets?.map((w:any) => `${w.chain}:${String(w.address).slice(0,8)}…`).join(" · ")}</div></div>
-            <span className="muted">Unfollowed</span>
-            <span className="muted">Settings preserved</span>
-            <span className="badge paper">PAPER ON RESTORE</span>
-            <div className="actions"><button className="secondary" disabled={busy} onClick={() => void followAgain(t.config_id, label)}>Follow again</button></div>
-          </div>;
-        })}
-      </div>
-    </section>}
-
-    <section className="card">
-      <div className="sectionTitle"><h2>Live positions</h2><span>{livePositions.length}</span></div>
-      <GroupedPositions groups={liveGroups} emptyText="No live positions." onExit={exit} />
-    </section>
-
-    <section className="card">
-      <div className="sectionTitle"><h2>Paper positions</h2><span>{paperPositions.length}</span></div>
-      <GroupedPositions groups={paperGroups} emptyText="No paper positions." onExit={exit} />
-    </section>
-
-    <section className="card">
-      <div className="sectionTitle"><h2>Recent executions</h2><span>last 20</span></div>
-      <GroupedExecutions groups={executionGroups} />
     </section>
   </main>;
-}
-
-function GroupedPositions({ groups, emptyText, onExit }: { groups: TraderGroup[]; emptyText: string; onExit: (id: string, percentage: number) => void }) {
-  if (!groups.length) return <p className="muted">{emptyText}</p>;
-  return <div className="traderGroups">
-    {groups.map((group) => <div className="traderGroup" key={group.key}>
-      <div className="traderGroupHead"><b>{group.label}</b><span>{group.items.length} position{group.items.length === 1 ? "" : "s"}</span></div>
-      <div className="cards">{group.items.map((p) => <PositionCard key={p.id} position={p} onExit={onExit} />)}</div>
-    </div>)}
-  </div>;
-}
-
-function GroupedExecutions({ groups }: { groups: TraderGroup[] }) {
-  if (!groups.length) return <p className="muted">No executions yet.</p>;
-  return <div className="traderGroups">
-    {groups.map((group) => <div className="traderGroup" key={group.key}>
-      <div className="traderGroupHead"><b>{group.label}</b><span>{group.items.length} execution{group.items.length === 1 ? "" : "s"}</span></div>
-      <div className="table compact">
-        {group.items.map((e) => <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className={String(e.status).startsWith("failed") ? "sell" : "muted"}>{e.status}</span><span>{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : "—"}</span></div>)}
-      </div>
-    </div>)}
-  </div>;
 }
 
 function PositionCard({ position: p, onExit }: { position: any; onExit: (id: string, percentage: number) => void }) {
@@ -364,25 +331,35 @@ function PositionCard({ position: p, onExit }: { position: any; onExit: (id: str
         </article>;
 }
 
-function FollowingRow({ trader: t, dashboard, liveReady, busy, updateConfig, unfollow }: {
-  trader: any;
+function LeaderCard({ leader, dashboard, active, liveReady, busy, updateConfig, unfollow, followAgain, exit }: {
+  leader: any;
   dashboard: Dashboard;
+  active: boolean;
   liveReady: boolean;
   busy: boolean;
   updateConfig: (id: string, patch: any) => Promise<void>;
   unfollow: (id: string, label: string) => Promise<void>;
+  followAgain: (id: string, label: string) => Promise<void>;
+  exit: (positionId: string, percentage: number) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const t = leader;
   const [tradeAmountUsd, setTradeAmountUsd] = useState(String(t.trade_amount_usd));
   const [takeProfitPct, setTakeProfitPct] = useState(t.take_profit_pct == null ? "" : String(t.take_profit_pct));
   const [stopLossPct, setStopLossPct] = useState(t.stop_loss_pct == null ? "" : String(t.stop_loss_pct));
+  const [copyTopups, setCopyTopups] = useState(Boolean(t.copy_topups));
   const label = t.handle ? `@${t.handle}` : t.display_name;
+  const leaderPositions = dashboard.positions.filter((p) => p.trader_id === t.trader_id);
+  const livePositions = leaderPositions.filter((p) => p.mode === "live");
+  const paperPositions = leaderPositions.filter((p) => p.mode === "paper");
+  const executions = dashboard.executions.filter((e) => e.trader_id === t.trader_id);
 
   async function saveSettings() {
     await updateConfig(t.config_id, {
       tradeAmountUsd: Number(tradeAmountUsd),
       takeProfitPct: takeProfitPct ? Number(takeProfitPct) : null,
       stopLossPct: stopLossPct ? Number(stopLossPct) : null,
+      copyTopups,
     });
     setEditing(false);
   }
@@ -392,29 +369,60 @@ function FollowingRow({ trader: t, dashboard, liveReady, busy, updateConfig, unf
     void updateConfig(t.config_id, { dryRun: false, confirmLive: true });
   }
 
-  return <div className="row">
-    <div><b>{label}</b><div className="muted mono">{t.wallets?.map((w:any) => `${w.chain}:${String(w.address).slice(0,8)}…`).join(" · ")}</div></div>
-    {editing ? <>
-      <label>$ / entry<input type="number" min="1" step="1" value={tradeAmountUsd} onChange={(e) => setTradeAmountUsd(e.target.value)} /></label>
-      <label>TP %<input type="number" value={takeProfitPct} onChange={(e) => setTakeProfitPct(e.target.value)} /></label>
-      <label>SL %<input type="number" value={stopLossPct} onChange={(e) => setStopLossPct(e.target.value)} /></label>
-    </> : <>
-      <SettingValue label="$ / entry" value={`$${Number(t.trade_amount_usd).toFixed(2)}`} />
-      <SettingValue label="TP" value={t.take_profit_pct == null ? "off" : `${t.take_profit_pct}%`} />
-      <SettingValue label="SL" value={t.stop_loss_pct == null ? "off" : `${t.stop_loss_pct}%`} />
-    </>}
-    <span className={t.dry_run ? "badge paper" : "badge danger"}>{t.dry_run ? "PAPER: SIMULATE" : "LIVE: REAL FUNDS"}</span>
-    <div className="actions">
+  return <article className={`leaderCard ${active ? "" : "inactiveLeader"}`}>
+    <div className="leaderHead">
+      <div>
+        <h3>{label}</h3>
+        <div className="muted mono">{t.wallets?.map((w:any) => `${w.chain}:${String(w.address).slice(0,8)}…`).join(" · ")}</div>
+      </div>
+      <div className="actions">
+        <span className={!active ? "badge warn" : t.dry_run ? "badge paper" : "badge danger"}>{!active ? "UNFOLLOWED" : t.dry_run ? "PAPER: SIMULATE" : "LIVE: REAL FUNDS"}</span>
+        {active ? <>
+          {editing ? <>
+            <button disabled={busy || !Number(tradeAmountUsd)} onClick={() => void saveSettings()}>Save settings</button>
+            <button className="secondary" onClick={() => setEditing(false)}>Cancel</button>
+          </> : <>
+            <button className="secondary" onClick={() => setEditing(true)}>Edit settings</button>
+            {t.dry_run ? <button className="danger" disabled={busy || !liveReady} title={liveReady ? "" : "Complete wallet readiness before enabling live"} onClick={confirmLive}>Enable live</button> : <button className="secondary" onClick={() => void updateConfig(t.config_id, { dryRun: true })}>Paper mode</button>}
+            <button className="secondary" onClick={() => void unfollow(t.config_id, label)}>Unfollow</button>
+          </>}
+        </> : <button className="secondary" disabled={busy} onClick={() => void followAgain(t.config_id, label)}>Follow again</button>}
+      </div>
+    </div>
+
+    <div className="leaderSettings">
       {editing ? <>
-        <button disabled={busy || !Number(tradeAmountUsd)} onClick={() => void saveSettings()}>Save settings</button>
-        <button className="secondary" onClick={() => setEditing(false)}>Cancel</button>
+        <label>$ / entry<input type="number" min="1" step="1" value={tradeAmountUsd} onChange={(e) => setTradeAmountUsd(e.target.value)} /></label>
+        <label>TP %<input type="number" value={takeProfitPct} onChange={(e) => setTakeProfitPct(e.target.value)} /></label>
+        <label>SL %<input type="number" value={stopLossPct} onChange={(e) => setStopLossPct(e.target.value)} /></label>
+        <label className="checkSetting"><input type="checkbox" checked={copyTopups} onChange={(e) => setCopyTopups(e.target.checked)} /> Copy top-ups as new $ amount buys</label>
       </> : <>
-        <button className="secondary" onClick={() => setEditing(true)}>Edit settings</button>
-        {t.dry_run ? <button className="danger" disabled={busy || !liveReady} title={liveReady ? "" : "Complete wallet readiness before enabling live"} onClick={confirmLive}>Enable live</button> : <button className="secondary" onClick={() => void updateConfig(t.config_id, { dryRun: true })}>Paper mode</button>}
-        <button className="secondary" onClick={() => void unfollow(t.config_id, label)}>Unfollow</button>
+        <SettingValue label="$ / entry" value={`$${Number(t.trade_amount_usd).toFixed(2)}`} />
+        <SettingValue label="TP" value={t.take_profit_pct == null ? "off" : `${t.take_profit_pct}%`} />
+        <SettingValue label="SL" value={t.stop_loss_pct == null ? "off" : `${t.stop_loss_pct}%`} />
+        <SettingValue label="Top-ups" value={t.copy_topups ? "copy as new buy" : "skip"} />
       </>}
     </div>
-  </div>;
+
+    <div className="leaderColumns">
+      <LeaderPanel title="Live positions" count={livePositions.length}>
+        <div className="miniCards">{livePositions.map((p) => <PositionCard key={p.id} position={p} onExit={exit} />)}{!livePositions.length && <p className="muted">No live positions.</p>}</div>
+      </LeaderPanel>
+      <LeaderPanel title="Paper positions" count={paperPositions.length}>
+        <div className="miniCards">{paperPositions.map((p) => <PositionCard key={p.id} position={p} onExit={exit} />)}{!paperPositions.length && <p className="muted">No paper positions.</p>}</div>
+      </LeaderPanel>
+      <LeaderPanel title="Recent executions" count={executions.length}>
+        <div className="table compact leaderExecutions">
+          {executions.slice(0, 6).map((e) => <div className="row execution" key={e.id}><span className={e.side === "buy" ? "buy" : "sell"}>{e.side.toUpperCase()}</span><span className="mono">{e.token.slice(0,8)}…</span><span>{e.reason}</span><span>{e.actual_usd != null ? `$${Number(e.actual_usd).toFixed(2)}` : "—"}</span><span className={String(e.status).startsWith("failed") ? "sell" : "muted"}>{e.status}</span><span>{e.tx_hash ? <a href={`https://solscan.io/tx/${e.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a> : "—"}</span></div>)}
+          {!executions.length && <p className="muted">No executions yet.</p>}
+        </div>
+      </LeaderPanel>
+    </div>
+  </article>;
+}
+
+function LeaderPanel({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+  return <section className="leaderPanel"><div className="leaderPanelHead"><b>{title}</b><span>{count}</span></div>{children}</section>;
 }
 
 function SettingValue({ label, value }: { label: string; value: string }) {
