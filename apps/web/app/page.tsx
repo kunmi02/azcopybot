@@ -28,6 +28,16 @@ type SystemHealth = {
 
 type TraderGroup = { key: string; label: string; items: any[] };
 
+function mergeActivityEvents(current: any[], incoming: any[]) {
+  const byId = new Map<string, any>();
+  for (const event of [...incoming, ...current]) {
+    if (event?.id) byId.set(String(event.id), event);
+  }
+  return [...byId.values()]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 80);
+}
+
 async function request(path: string, token: string | null, init?: RequestInit) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (token) headers.authorization = `Bearer ${token}`;
@@ -58,18 +68,27 @@ export default function Home() {
     if (!token) return;
     setFeedStatus("connecting");
     const events = new EventSource(`${API}/api/events?token=${encodeURIComponent(token)}`);
-    events.addEventListener("ready", () => setFeedStatus("live"));
+    events.addEventListener("ready", () => {
+      setFeedStatus("live");
+      void loadActivity();
+    });
     events.addEventListener("activity", (raw) => {
       const event = JSON.parse((raw as MessageEvent).data);
-      setActivity((current) => [event, ...current].slice(0, 80));
+      setActivity((current) => mergeActivityEvents(current, [event]));
       setLastUpdated(new Date());
     });
-    events.onerror = () => setFeedStatus("disconnected");
+    events.onerror = () => {
+      setFeedStatus("disconnected");
+      void loadActivity();
+    };
     return () => events.close();
   }, [token]);
   useEffect(() => {
     if (!token) return;
-    const timer = setInterval(() => void loadHealth(), 10_000);
+    const timer = setInterval(() => {
+      void loadHealth();
+      void loadActivity();
+    }, 10_000);
     return () => clearInterval(timer);
   }, [token]);
 
@@ -86,6 +105,16 @@ export default function Home() {
   async function loadHealth() {
     try { setHealth(await request("/api/system-health", token)); }
     catch (e) { setMessage(String(e)); }
+  }
+
+  async function loadActivity() {
+    try {
+      const result = await request("/api/activity?limit=80", token);
+      setActivity((current) => mergeActivityEvents(current, result.events ?? []));
+      setLastUpdated(new Date());
+    } catch (e) {
+      setFeedStatus("disconnected");
+    }
   }
 
   async function login(e: FormEvent) {
@@ -252,7 +281,7 @@ export default function Home() {
         </div>
       </div>
       <div className="card">
-        <div className="sectionTitle"><h2>Activity feed</h2><span>{activity.length} recent</span></div>
+        <div className="sectionTitle"><h2>Activity feed</h2><span>{feedStatus === "live" ? "Live" : feedStatus === "connecting" ? "Connecting" : "Polling"} · {activity.length} recent{lastUpdated ? ` · updated ${timeAgo(lastUpdated)}` : ""}</span></div>
         <div className="activityList">
           {activity.slice(0, 12).map((event) => <div className={`activity ${event.severity ?? "info"}`} key={event.id}>
             <span>{formatEventTime(event.created_at)}</span>

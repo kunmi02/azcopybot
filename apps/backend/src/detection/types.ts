@@ -22,7 +22,7 @@ export interface TransactionSnapshot {
 }
 
 export interface DetectionCandidate {
-  classification: "buy" | "full_exit";
+  classification: "buy" | "partial_exit" | "full_exit";
   wallet: string;
   token: string;
   quoteAsset?: string;

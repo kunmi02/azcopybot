@@ -97,6 +97,7 @@ export function detectForWallet(
   }
 
   const results: DetectionCandidate[] = [];
+  const fullExitTokens = new Set<string>();
 
   // Full exit has priority for tracked tokens.
   for (const mint of trackedOpenTokens) {
@@ -104,6 +105,7 @@ export function detectForWallet(
     const before = getTokenAmount(pre, wallet, mint);
     const after = getTokenAmount(post, wallet, mint);
     if (before > 0n && after === 0n) {
+      fullExitTokens.add(mint);
       results.push({ classification: "full_exit", wallet, token: mint, tokenAmountRaw: before, tokenDecimals: tokenDecimals(snapshot, wallet, mint), requiresLiquidityCheck: false });
     }
   }
@@ -115,6 +117,41 @@ export function detectForWallet(
     const before = getTokenAmount(pre, wallet, mint);
     const after = getTokenAmount(post, wallet, mint);
     if (before > after) quoteSpend.push({ mint, amount: before - after });
+  }
+
+  const quoteReceive: Array<{ mint: string; amount: bigint }> = [];
+  const walletIndex = snapshot.accountKeys.indexOf(wallet);
+  if (walletIndex >= 0) {
+    const nativeBefore = snapshot.preNativeBalances[walletIndex] ?? 0n;
+    const nativeAfter = snapshot.postNativeBalances[walletIndex] ?? 0n;
+    if (nativeAfter > nativeBefore) quoteReceive.push({ mint: SOL_MINT, amount: nativeAfter - nativeBefore });
+  }
+  for (const mint of [WSOL, USDC, USDT]) {
+    const before = getTokenAmount(pre, wallet, mint);
+    const after = getTokenAmount(post, wallet, mint);
+    if (after > before) quoteReceive.push({ mint, amount: after - before });
+  }
+
+  const sellProceeds = quoteReceive.sort((a, b) => (a.amount > b.amount ? -1 : 1))[0];
+  if (sellProceeds) {
+    for (const mint of mints) {
+      if (SOLANA_QUOTES.has(mint) || fullExitTokens.has(mint)) continue;
+      const before = getTokenAmount(pre, wallet, mint);
+      const after = getTokenAmount(post, wallet, mint);
+      if (before <= after) continue;
+      const sold = before - after;
+      results.push({
+        classification: after === 0n ? "full_exit" : "partial_exit",
+        wallet,
+        token: mint,
+        quoteAsset: sellProceeds.mint,
+        quoteAmountRaw: sellProceeds.amount,
+        tokenAmountRaw: sold,
+        preTokenAmountRaw: before,
+        tokenDecimals: tokenDecimals(snapshot, wallet, mint),
+        requiresLiquidityCheck: false,
+      });
+    }
   }
 
   const paymentSomewhere = anyQuotePayment(snapshot, pre, post);

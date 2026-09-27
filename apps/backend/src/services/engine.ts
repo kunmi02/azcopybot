@@ -109,6 +109,31 @@ export class TradingEngine {
             );
             await this.copyTrade.onEntry(config, event, kind);
           }
+        } else if (event.classification === "partial_exit") {
+          const market = await this.prices.getTokenMarket(event.token).catch(() => null);
+          const tokenLabel = tokenDisplay(event.token, market);
+          const soldAmount = formatTokenAmount(event.tokenAmountRaw, event.tokenDecimals, market?.symbol);
+          const proceeds = formatQuoteAmount(event.quoteAmountRaw, event.quoteAsset);
+          for (const config of configs) {
+            await this.activity.emit({
+              userId: config.userId,
+              traderId: trader.id,
+              type: "leader_partial_sell_detected",
+              severity: "warning",
+              message: `Partial sell detected for ${config.traderHandle ? `@${config.traderHandle}` : config.traderName}`,
+              metadata: { chain: event.chain, txHash: event.txHash, token: event.token, quoteAsset: event.quoteAsset, quoteAmountRaw: event.quoteAmountRaw?.toString() ?? null },
+            });
+            await this.notify(config.chatId,
+              `🟠 Partial sell detected\n` +
+              `Trader: ${config.traderHandle ? `@${config.traderHandle}` : config.traderName}\n` +
+              `Meaning: the trader reduced this token position, but did not fully exit.\n` +
+              `CopyBot action: no automatic sell. Mirror exits only applies when the leader balance goes to zero.\n` +
+              `Token: ${tokenLabel}\n` +
+              `Sold amount: ${soldAmount}\n` +
+              `Proceeds: ${proceeds}\n` +
+              `Source tx: ${solscanTx(event.txHash)}`,
+            );
+          }
         } else if (event.classification === "full_exit") {
           await this.db.closeLeaderPosition(trader.id, event);
           for (const config of configs) {
@@ -167,4 +192,18 @@ function formatTokenAmount(raw: bigint | undefined, decimals: number | undefined
   const value = Number(raw) / 10 ** decimals;
   const formatted = value >= 1 ? value.toLocaleString(undefined, { maximumFractionDigits: 4 }) : value.toLocaleString(undefined, { maximumSignificantDigits: 4 });
   return symbol ? `${formatted} ${symbol}` : formatted;
+}
+
+function formatQuoteAmount(raw: bigint | undefined, quoteAsset: string | undefined) {
+  if (raw == null || !quoteAsset) return "unknown";
+  const quote = quoteAsset === "native" ? "SOL" : quoteAsset;
+  const decimals = quote === "SOL" || quote === "So11111111111111111111111111111111111111112" ? 9 : 6;
+  const symbol =
+    quote === "So11111111111111111111111111111111111111112" ? "wSOL" :
+    quote === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" ? "USDC" :
+    quote === "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" ? "USDT" :
+    quote;
+  const value = Number(raw) / 10 ** decimals;
+  const formatted = value >= 1 ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : value.toLocaleString(undefined, { maximumSignificantDigits: 6 });
+  return `${formatted} ${symbol}`;
 }

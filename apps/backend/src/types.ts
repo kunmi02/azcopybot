@@ -1,6 +1,6 @@
 export type Chain = "solana" | "ethereum" | "base" | "bnb";
 export type ChainFamily = "solana" | "evm";
-export type TradeClassification = "buy" | "full_exit" | "neither";
+export type TradeClassification = "buy" | "partial_exit" | "full_exit" | "neither";
 export type EntryKind = "new_entry" | "top_up";
 
 export interface TradeEvent {

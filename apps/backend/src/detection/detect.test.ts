@@ -69,3 +69,39 @@ test("marks relay-style receive for liquidity verification", () => {
   assert.equal(events.length, 1);
   assert.equal(events[0].requiresLiquidityCheck, true);
 });
+
+test("detects token -> USDC partial sell", () => {
+  const tx = base();
+  tx.preTokenBalances = [
+    { accountIndex: 1, owner: WALLET, mint: TOKEN, amount: 5_000_000n, decimals: 6 },
+    { accountIndex: 1, owner: WALLET, mint: USDC, amount: 10_000_000n, decimals: 6 },
+  ];
+  tx.postTokenBalances = [
+    { accountIndex: 1, owner: WALLET, mint: TOKEN, amount: 2_000_000n, decimals: 6 },
+    { accountIndex: 1, owner: WALLET, mint: USDC, amount: 15_000_000n, decimals: 6 },
+  ];
+  const events = detectForWallet(tx, WALLET);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].classification, "partial_exit");
+  assert.equal(events[0].quoteAsset, USDC);
+  assert.equal(events[0].quoteAmountRaw, 5_000_000n);
+  assert.equal(events[0].tokenAmountRaw, 3_000_000n);
+});
+
+test("detects token -> USDC full sell", () => {
+  const tx = base();
+  tx.preTokenBalances = [
+    { accountIndex: 1, owner: WALLET, mint: TOKEN, amount: 5_000_000n, decimals: 6 },
+    { accountIndex: 1, owner: WALLET, mint: USDC, amount: 10_000_000n, decimals: 6 },
+  ];
+  tx.postTokenBalances = [
+    { accountIndex: 1, owner: WALLET, mint: TOKEN, amount: 0n, decimals: 6 },
+    { accountIndex: 1, owner: WALLET, mint: USDC, amount: 15_000_000n, decimals: 6 },
+  ];
+  const events = detectForWallet(tx, WALLET);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].classification, "full_exit");
+  assert.equal(events[0].quoteAsset, USDC);
+  assert.equal(events[0].quoteAmountRaw, 5_000_000n);
+  assert.equal(events[0].tokenAmountRaw, 5_000_000n);
+});

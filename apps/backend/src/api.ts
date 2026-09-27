@@ -103,20 +103,25 @@ export async function buildApi(
   app.get("/api/events", async (req, reply) => {
     const user = await requireUserFromHeaderOrQuery(req, db);
     reply.hijack();
+    app.log.info({ userId: user.id }, "activity_stream_connected");
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
       "x-accel-buffering": "no",
     });
-    reply.raw.write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+    const write = (payload: string) => {
+      if (!reply.raw.destroyed) reply.raw.write(payload);
+    };
+    write(`event: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
     const unsubscribe = activity.subscribe(user.id, (event) => {
-      reply.raw.write(`event: activity\ndata: ${JSON.stringify(event)}\n\n`);
+      write(`event: activity\ndata: ${JSON.stringify(event)}\n\n`);
     });
-    const keepAlive = setInterval(() => reply.raw.write(": keepalive\n\n"), 25_000);
+    const keepAlive = setInterval(() => write(": keepalive\n\n"), 25_000);
     req.raw.on("close", () => {
       clearInterval(keepAlive);
       unsubscribe();
+      app.log.info({ userId: user.id }, "activity_stream_closed");
     });
   });
 
