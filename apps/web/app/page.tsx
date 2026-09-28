@@ -370,6 +370,45 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
     }
   }
 
+  async function convertPaperToLive(positionId: string) {
+    const position = data?.positions.find((p) => p.id === positionId);
+    if (!position) return;
+    const label = position.symbol ?? position.token;
+    const amount = Number(position.cost_usd);
+    const current =
+      position.current_value_usd == null
+        ? "unknown"
+        : `$${Number(position.current_value_usd).toFixed(2)}`;
+    if (
+      !confirm(
+        `Convert paper position to LIVE for ${label}?\n\nThis will submit a real buy now using about $${amount.toFixed(2)} USDC from your copy wallet.\nCurrent paper value: ${current}\nPaper PnL does not become real retroactively; the live entry price starts from the confirmed buy.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request(
+        `/api/positions/${positionId}/convert-live`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ confirmLive: true }),
+        },
+      );
+      setMessage(
+        result.status === "submitted_unknown"
+          ? "Live buy submitted, but confirmation is unknown. The bot will reconcile it."
+          : "Paper position converted to live.",
+      );
+      await load();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function updateConfig(id: string, patch: any) {
     setBusy(true);
     setMessage("");
@@ -868,6 +907,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               unfollow={unfollow}
               followAgain={followAgain}
               exit={exit}
+              convertPaperToLive={convertPaperToLive}
               retryExecution={retryExecution}
             />
           ))}
@@ -883,6 +923,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               unfollow={unfollow}
               followAgain={followAgain}
               exit={exit}
+              convertPaperToLive={convertPaperToLive}
               retryExecution={retryExecution}
             />
           ))}
@@ -898,9 +939,15 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
 function PositionCard({
   position: p,
   onExit,
+  onConvertPaperToLive,
+  canConvertPaperToLive,
+  busy,
 }: {
   position: any;
   onExit: (id: string, percentage: number) => void;
+  onConvertPaperToLive: (id: string) => void;
+  canConvertPaperToLive: boolean;
+  busy: boolean;
 }) {
   return (
     <article className={`position ${p.mode}`} key={p.id}>
@@ -948,6 +995,20 @@ function PositionCard({
             {p.mode === "live" ? "Sell" : "Close"} {percentage}%
           </button>
         ))}
+        {p.mode === "paper" && (
+          <button
+            className="danger"
+            disabled={busy || !canConvertPaperToLive}
+            title={
+              canConvertPaperToLive
+                ? ""
+                : "Complete wallet readiness before converting to live"
+            }
+            onClick={() => onConvertPaperToLive(p.id)}
+          >
+            Convert to live
+          </button>
+        )}
       </div>
     </article>
   );
@@ -963,6 +1024,7 @@ function LeaderCard({
   unfollow,
   followAgain,
   exit,
+  convertPaperToLive,
   retryExecution,
 }: {
   leader: any;
@@ -974,6 +1036,7 @@ function LeaderCard({
   unfollow: (id: string, label: string) => Promise<void>;
   followAgain: (id: string, label: string) => Promise<void>;
   exit: (positionId: string, percentage: number) => Promise<void>;
+  convertPaperToLive: (positionId: string) => Promise<void>;
   retryExecution: (execution: any) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -987,6 +1050,9 @@ function LeaderCard({
   );
   const [stopLossPct, setStopLossPct] = useState(
     t.stop_loss_pct == null ? "" : String(t.stop_loss_pct),
+  );
+  const [maxHoldSeconds, setMaxHoldSeconds] = useState(
+    t.max_hold_seconds == null ? "" : String(t.max_hold_seconds),
   );
   const [copyTopups, setCopyTopups] = useState(Boolean(t.copy_topups));
   const [mirrorExits, setMirrorExits] = useState(Boolean(t.mirror_exits));
@@ -1005,6 +1071,7 @@ function LeaderCard({
       tradeAmountUsd: Number(tradeAmountUsd),
       takeProfitPct: takeProfitPct ? Number(takeProfitPct) : null,
       stopLossPct: stopLossPct ? Number(stopLossPct) : null,
+      maxHoldSeconds: maxHoldSeconds ? Number(maxHoldSeconds) : null,
       copyTopups,
       mirrorExits,
     });
@@ -1014,7 +1081,7 @@ function LeaderCard({
   function confirmLive() {
     if (
       !confirm(
-        `Enable LIVE trading for ${label}?\n$${Number(t.trade_amount_usd).toFixed(2)} per entry\nTP: ${t.take_profit_pct ?? "off"}% · SL: ${t.stop_loss_pct ?? "off"}%\nCopy wallet: ${dashboard.wallet?.display_address ?? "not configured"}\nUSDC: ${dashboard.walletBalances?.usdc == null ? "unknown" : `$${dashboard.walletBalances.usdc.toFixed(2)}`}\nSOL: ${dashboard.walletBalances?.sol == null ? "unknown" : dashboard.walletBalances.sol.toFixed(4)}\n\nFuture qualifying entries can spend real funds.`,
+        `Enable LIVE trading for ${label}?\n$${Number(t.trade_amount_usd).toFixed(2)} per entry\nTP: ${t.take_profit_pct ?? "off"}% · SL: ${t.stop_loss_pct ?? "off"}% · Max hold: ${formatMaxHold(t.max_hold_seconds)}\nCopy wallet: ${dashboard.wallet?.display_address ?? "not configured"}\nUSDC: ${dashboard.walletBalances?.usdc == null ? "unknown" : `$${dashboard.walletBalances.usdc.toFixed(2)}`}\nSOL: ${dashboard.walletBalances?.sol == null ? "unknown" : dashboard.walletBalances.sol.toFixed(4)}\n\nFuture qualifying entries can spend real funds.`,
       )
     )
       return;
@@ -1146,6 +1213,21 @@ function LeaderCard({
                 onChange={(e) => setStopLossPct(e.target.value)}
               />
             </label>
+            <label>
+              Max hold
+              <select
+                value={maxHoldSeconds}
+                onChange={(e) => setMaxHoldSeconds(e.target.value)}
+              >
+                <option value="">Off</option>
+                <option value="1800">30 minutes</option>
+                <option value="3600">1 hour</option>
+                <option value="14400">4 hours</option>
+                <option value="43200">12 hours</option>
+                <option value="86400">24 hours</option>
+                <option value="259200">72 hours</option>
+              </select>
+            </label>
             <label className="checkSetting">
               <input
                 type="checkbox"
@@ -1180,6 +1262,10 @@ function LeaderCard({
               value={t.stop_loss_pct == null ? "off" : `${t.stop_loss_pct}%`}
             />
             <SettingValue
+              label="Max hold"
+              value={formatMaxHold(t.max_hold_seconds)}
+            />
+            <SettingValue
               label="Top-ups"
               value={t.copy_topups ? "copy as new buy" : "skip"}
             />
@@ -1195,7 +1281,14 @@ function LeaderCard({
         <LeaderPanel title="Live positions" count={livePositions.length}>
           <div className="miniCards">
             {livePositions.map((p) => (
-              <PositionCard key={p.id} position={p} onExit={exit} />
+              <PositionCard
+                key={p.id}
+                position={p}
+                onExit={exit}
+                onConvertPaperToLive={convertPaperToLive}
+                canConvertPaperToLive={liveReady}
+                busy={busy}
+              />
             ))}
             {!livePositions.length && (
               <p className="muted">No live positions.</p>
@@ -1205,7 +1298,14 @@ function LeaderCard({
         <LeaderPanel title="Paper positions" count={paperPositions.length}>
           <div className="miniCards">
             {paperPositions.map((p) => (
-              <PositionCard key={p.id} position={p} onExit={exit} />
+              <PositionCard
+                key={p.id}
+                position={p}
+                onExit={exit}
+                onConvertPaperToLive={convertPaperToLive}
+                canConvertPaperToLive={liveReady}
+                busy={busy}
+              />
             ))}
             {!paperPositions.length && (
               <p className="muted">No paper positions.</p>
@@ -1310,6 +1410,16 @@ function SettingValue({ label, value }: { label: string; value: string }) {
       <b>{value}</b>
     </div>
   );
+}
+
+function formatMaxHold(seconds: number | string | null | undefined) {
+  if (seconds == null || seconds === "") return "off";
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return "off";
+  if (value % 86400 === 0) return `${value / 86400}d`;
+  if (value % 3600 === 0) return `${value / 3600}h`;
+  if (value % 60 === 0) return `${value / 60}m`;
+  return `${value}s`;
 }
 
 function HealthItem({

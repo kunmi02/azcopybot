@@ -15,10 +15,17 @@ export class PositionService {
     private readonly activity: ActivityService,
   ) {}
 
-  async exit(userId: string, positionId: string, percentage: number, reason: string) {
-    if (![25, 50, 75, 100].includes(percentage)) throw new Error("INVALID_EXIT_PERCENTAGE");
+  async exit(
+    userId: string,
+    positionId: string,
+    percentage: number,
+    reason: string,
+  ) {
+    if (![25, 50, 75, 100].includes(percentage))
+      throw new Error("INVALID_EXIT_PERCENTAGE");
     const position = await this.db.getPositionForUser(userId, positionId);
-    if (!position || position.status !== "open") throw new Error("POSITION_NOT_OPEN");
+    if (!position || position.status !== "open")
+      throw new Error("POSITION_NOT_OPEN");
     const market = await this.prices.getTokenMarket(position.token);
     if (!market) throw new Error("PRICE_UNAVAILABLE");
 
@@ -28,11 +35,24 @@ export class PositionService {
 
     if (position.mode === "paper") {
       const executionId = await this.db.createExecution({
-        userId, positionId, traderId: position.trader_id, chain: position.chain, token: position.token,
-        side: "sell", reason, actualUsd: expectedUsd, tokenQty: qty, executionPrice: market.priceUsd, status: "paper",
+        userId,
+        positionId,
+        traderId: position.trader_id,
+        chain: position.chain,
+        token: position.token,
+        side: "sell",
+        reason,
+        actualUsd: expectedUsd,
+        tokenQty: qty,
+        executionPrice: market.priceUsd,
+        status: "paper",
       });
       if (percentage === 100) await this.db.closePosition(positionId);
-      else await this.db.pool.query(`UPDATE positions SET qty=qty-$2,cost_usd=cost_usd*(1-$3::double precision) WHERE id=$1`, [positionId, qty, percentage / 100]);
+      else
+        await this.db.pool.query(
+          `UPDATE positions SET qty=qty-$2,cost_usd=cost_usd*(1-$3::double precision) WHERE id=$1`,
+          [positionId, qty, percentage / 100],
+        );
       await this.activity.emit({
         userId,
         traderId: position.trader_id,
@@ -43,11 +63,15 @@ export class PositionService {
         message: `Paper exit: ${percentage}% of ${market.symbol ?? position.token}`,
         metadata: { token: position.token, percentage, expectedUsd, reason },
       });
-      await this.notify(position.telegram_chat_id, `🟡 PAPER EXIT\n${percentage}% of ${market.symbol ?? position.token}\nValue: $${expectedUsd.toFixed(2)}\nReason: ${reason}`);
+      await this.notify(
+        position.telegram_chat_id,
+        `🟡 PAPER EXIT\n${percentage}% of ${market.symbol ?? position.token}\nValue: $${expectedUsd.toFixed(2)}\nReason: ${reason}`,
+      );
       return;
     }
 
-    if (!position.signer_ref || !position.copy_wallet_address) throw new Error("COPY_WALLET_NOT_CONFIGURED");
+    if (!position.signer_ref || !position.copy_wallet_address)
+      throw new Error("COPY_WALLET_NOT_CONFIGURED");
     try {
       await this.activity.emit({
         userId,
@@ -65,22 +89,36 @@ export class PositionService {
         tokenQty: qty,
         slippageBps: Number(position.slippage_bps ?? 300),
         expectedUsd,
-        onProgress: (stage, message, metadata) => this.activity.emit({
-          userId,
-          traderId: position.trader_id,
-          positionId,
-          type: `sell_${stage}`,
-          message,
-          metadata: { ...metadata, reason },
-        }),
+        onProgress: (stage, message, metadata) =>
+          this.activity.emit({
+            userId,
+            traderId: position.trader_id,
+            positionId,
+            type: `sell_${stage}`,
+            message,
+            metadata: { ...metadata, reason },
+          }),
       });
       const executionId = await this.db.createExecution({
-        userId, positionId, traderId: position.trader_id, chain: position.chain, token: position.token,
-        side: "sell", reason, actualUsd: result.actualUsd, tokenQty: qty, executionPrice: result.executionPrice,
-        txHash: result.txHash, status: "confirmed",
+        userId,
+        positionId,
+        traderId: position.trader_id,
+        chain: position.chain,
+        token: position.token,
+        side: "sell",
+        reason,
+        actualUsd: result.actualUsd,
+        tokenQty: qty,
+        executionPrice: result.executionPrice,
+        txHash: result.txHash,
+        status: "confirmed",
       });
       if (percentage === 100) await this.db.closePosition(positionId);
-      else await this.db.pool.query(`UPDATE positions SET qty=qty-$2,cost_usd=cost_usd*(1-$3::double precision) WHERE id=$1`, [positionId, qty, percentage / 100]);
+      else
+        await this.db.pool.query(
+          `UPDATE positions SET qty=qty-$2,cost_usd=cost_usd*(1-$3::double precision) WHERE id=$1`,
+          [positionId, qty, percentage / 100],
+        );
       await this.activity.emit({
         userId,
         traderId: position.trader_id,
@@ -89,15 +127,32 @@ export class PositionService {
         type: "sell_confirmed",
         severity: "success",
         message: `SELL confirmed: ${percentage}% of ${market.symbol ?? position.token}`,
-        metadata: { token: position.token, percentage, actualUsd: result.actualUsd, txHash: result.txHash, reason },
+        metadata: {
+          token: position.token,
+          percentage,
+          actualUsd: result.actualUsd,
+          txHash: result.txHash,
+          reason,
+        },
       });
-      await this.notify(position.telegram_chat_id, `🔴 EXIT EXECUTED\n${percentage}% sold\nReceived: $${result.actualUsd.toFixed(2)}\nReason: ${reason}\nTX: ${result.txHash}`);
+      await this.notify(
+        position.telegram_chat_id,
+        `🔴 EXIT EXECUTED\n${percentage}% sold\nReceived: $${result.actualUsd.toFixed(2)}\nReason: ${reason}\nTX: ${result.txHash}`,
+      );
     } catch (error) {
       if (error instanceof SubmissionUnknownError) {
         await this.db.setPositionStatus(positionId, "closing");
         const executionId = await this.db.createExecution({
-          userId, positionId, traderId: position.trader_id, chain: position.chain, token: position.token,
-          side: "sell", reason, tokenQty: qty, txHash: error.signature, status: "submitted_unknown",
+          userId,
+          positionId,
+          traderId: position.trader_id,
+          chain: position.chain,
+          token: position.token,
+          side: "sell",
+          reason,
+          tokenQty: qty,
+          txHash: error.signature,
+          status: "submitted_unknown",
         });
         await this.activity.emit({
           userId,
@@ -107,15 +162,30 @@ export class PositionService {
           type: "sell_status_unknown",
           severity: "error",
           message: `EXIT status unknown for ${market.symbol ?? position.token}. Checking chain; do not retry yet.`,
-          metadata: { token: position.token, percentage, txHash: error.signature, reason },
+          metadata: {
+            token: position.token,
+            percentage,
+            txHash: error.signature,
+            reason,
+          },
         });
-        await this.notify(position.telegram_chat_id, `⚠️ EXIT SUBMITTED — CONFIRMATION UNKNOWN\nTX: ${error.signature}\nThe position is locked from another exit until this is reconciled. Do not retry manually.`);
+        await this.notify(
+          position.telegram_chat_id,
+          `⚠️ EXIT SUBMITTED — CONFIRMATION UNKNOWN\nTX: ${error.signature}\nThe position is locked from another exit until this is reconciled. Do not retry manually.`,
+        );
         return;
       }
       const failureReason = errorMessage(error, 500);
       const executionId = await this.db.createExecution({
-        userId, positionId, traderId: position.trader_id, chain: position.chain, token: position.token,
-        side: "sell", reason, tokenQty: qty, status: `failed:${failureReason.slice(0, 180)}`,
+        userId,
+        positionId,
+        traderId: position.trader_id,
+        chain: position.chain,
+        token: position.token,
+        side: "sell",
+        reason,
+        tokenQty: qty,
+        status: `failed:${failureReason.slice(0, 180)}`,
       });
       await this.activity.emit({
         userId,
@@ -125,12 +195,179 @@ export class PositionService {
         type: "sell_failed",
         severity: "error",
         message: `EXIT FAILED for ${market.symbol ?? position.token}: ${failureReason.slice(0, 180)}`,
-        metadata: { token: position.token, percentage, reason, error: failureReason },
+        metadata: {
+          token: position.token,
+          percentage,
+          reason,
+          error: failureReason,
+        },
       });
       await this.notify(
         position.telegram_chat_id,
         `🚨 EXIT FAILED — POSITION STILL OPEN\n${market.symbol ?? position.token}\nReason: ${failureReason}\nUse the dashboard to retry or inspect before submitting again.`,
-        [[{ text: "Retry sell", callback_data: `retry_execution:${executionId}` }]],
+        [
+          [
+            {
+              text: "Retry sell",
+              callback_data: `retry_execution:${executionId}`,
+            },
+          ],
+        ],
+      );
+      throw error;
+    }
+  }
+
+  async convertPaperToLive(userId: string, positionId: string) {
+    const position = await this.db.getPositionForUser(userId, positionId);
+    if (!position || position.status !== "open")
+      throw new Error("POSITION_NOT_OPEN");
+    if (position.mode !== "paper")
+      throw new Error("ONLY_PAPER_POSITIONS_CAN_BE_CONVERTED");
+    if (position.chain !== "solana") throw new Error("CHAIN_NOT_ENABLED_IN_V1");
+    const amountUsd = Number(position.cost_usd);
+    if (!(amountUsd > 0)) throw new Error("POSITION_COST_UNAVAILABLE");
+    const wallet = await this.db.getCopyWallet(userId, "solana");
+    if (!wallet) throw new Error("COPY_WALLET_NOT_CONFIGURED");
+    const market = await this.prices.getTokenMarket(position.token);
+    if (!market) throw new Error("PRICE_UNAVAILABLE");
+    const tokenLabel = market.symbol ?? position.token;
+
+    try {
+      await this.activity.emit({
+        userId,
+        traderId: position.trader_id,
+        positionId,
+        type: "paper_to_live_started",
+        severity: "warning",
+        message: `Converting paper position to live: ${tokenLabel}`,
+        metadata: { token: position.token, amountUsd },
+      });
+      const result = await this.executor.buy({
+        signerRef: wallet.signer_ref,
+        expectedPublicAddress: wallet.public_address,
+        token: position.token,
+        amountUsd,
+        slippageBps: Number(position.slippage_bps ?? 300),
+        onProgress: (stage, message, metadata) =>
+          this.activity.emit({
+            userId,
+            traderId: position.trader_id,
+            positionId,
+            type: `paper_to_live_${stage}`,
+            message,
+            metadata: { ...metadata, reason: "PAPER_TO_LIVE" },
+          }),
+      });
+      const livePosition = await this.db.convertPaperPositionToLive(
+        positionId,
+        wallet.id,
+        result.tokenQty,
+        result.actualUsd,
+        result.executionPrice,
+      );
+      if (!livePosition) throw new Error("PAPER_POSITION_CONVERSION_FAILED");
+      const executionId = await this.db.createExecution({
+        userId,
+        positionId,
+        traderId: position.trader_id,
+        chain: "solana",
+        token: position.token,
+        side: "buy",
+        reason: "PAPER_TO_LIVE",
+        requestedUsd: amountUsd,
+        actualUsd: result.actualUsd,
+        tokenQty: result.tokenQty,
+        executionPrice: result.executionPrice,
+        txHash: result.txHash,
+        status: "confirmed",
+      });
+      await this.activity.emit({
+        userId,
+        traderId: position.trader_id,
+        positionId,
+        executionId,
+        type: "paper_to_live_confirmed",
+        severity: "success",
+        message: `Paper position converted to LIVE: $${result.actualUsd.toFixed(2)} ${tokenLabel}`,
+        metadata: {
+          token: position.token,
+          txHash: result.txHash,
+          amountUsd: result.actualUsd,
+          executionPrice: result.executionPrice,
+        },
+      });
+      await this.notify(
+        position.telegram_chat_id,
+        `🟢 PAPER → LIVE confirmed\n${tokenLabel}\nBought: $${result.actualUsd.toFixed(2)}\nEntry price: $${result.executionPrice}\nTx: ${result.txHash}`,
+        [
+          [
+            { text: "Sell 50%", callback_data: `exit:50:${positionId}` },
+            { text: "Sell all", callback_data: `exit:100:${positionId}` },
+          ],
+        ],
+      );
+      return { ok: true, positionId, executionId, txHash: result.txHash };
+    } catch (error) {
+      if (error instanceof SubmissionUnknownError) {
+        const executionId = await this.db.createExecution({
+          userId,
+          positionId,
+          traderId: position.trader_id,
+          chain: "solana",
+          token: position.token,
+          side: "buy",
+          reason: "PAPER_TO_LIVE",
+          requestedUsd: amountUsd,
+          txHash: error.signature,
+          status: "submitted_unknown",
+        });
+        await this.activity.emit({
+          userId,
+          traderId: position.trader_id,
+          positionId,
+          executionId,
+          type: "paper_to_live_status_unknown",
+          severity: "warning",
+          message: `Paper → LIVE submitted but confirmation is unknown for ${tokenLabel}`,
+          metadata: { token: position.token, txHash: error.signature },
+        });
+        await this.notify(
+          position.telegram_chat_id,
+          `⚠️ PAPER → LIVE status unknown\n${tokenLabel}\nTx: ${error.signature}\nDo not retry until reconciliation checks chain status.`,
+        );
+        return {
+          ok: true,
+          status: "submitted_unknown",
+          executionId,
+          txHash: error.signature,
+        };
+      }
+      const failureReason = errorMessage(error, 500);
+      const executionId = await this.db.createExecution({
+        userId,
+        positionId,
+        traderId: position.trader_id,
+        chain: "solana",
+        token: position.token,
+        side: "buy",
+        reason: "PAPER_TO_LIVE",
+        requestedUsd: amountUsd,
+        status: `failed:${failureReason.slice(0, 180)}`,
+      });
+      await this.activity.emit({
+        userId,
+        traderId: position.trader_id,
+        positionId,
+        executionId,
+        type: "paper_to_live_failed",
+        severity: "error",
+        message: `PAPER → LIVE failed for ${tokenLabel}: ${failureReason.slice(0, 180)}`,
+        metadata: { token: position.token, error: failureReason },
+      });
+      await this.notify(
+        position.telegram_chat_id,
+        `🔴 PAPER → LIVE failed\n${tokenLabel}\nAttempted amount: $${amountUsd.toFixed(2)}\nReason: ${failureReason}`,
       );
       throw error;
     }
@@ -145,13 +382,20 @@ export class PositionService {
         await this.db.updatePositionHigh(p.id, market.priceUsd);
         const entry = Number(p.avg_entry_price);
         const pnlPct = ((market.priceUsd - entry) / entry) * 100;
-        const heldSeconds = (Date.now() - new Date(p.opened_at).getTime()) / 1000;
+        const heldSeconds =
+          (Date.now() - new Date(p.opened_at).getTime()) / 1000;
 
         if (p.take_profit_pct != null && pnlPct >= Number(p.take_profit_pct)) {
           await this.exit(p.user_id, p.id, 100, "TAKE_PROFIT");
-        } else if (p.stop_loss_pct != null && pnlPct <= -Number(p.stop_loss_pct)) {
+        } else if (
+          p.stop_loss_pct != null &&
+          pnlPct <= -Number(p.stop_loss_pct)
+        ) {
           await this.exit(p.user_id, p.id, 100, "STOP_LOSS");
-        } else if (p.max_hold_seconds != null && heldSeconds >= Number(p.max_hold_seconds)) {
+        } else if (
+          p.max_hold_seconds != null &&
+          heldSeconds >= Number(p.max_hold_seconds)
+        ) {
           await this.exit(p.user_id, p.id, 100, "MAX_HOLD");
         }
       } catch (error) {

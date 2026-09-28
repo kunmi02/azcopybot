@@ -333,6 +333,19 @@ export async function buildApi(
     return { ok: true, updated };
   });
 
+  app.post("/api/positions/:id/convert-live", async (req, reply) => {
+    const user = await requireUser(req, db);
+    if ((req.body as any)?.confirmLive !== true) {
+      return reply
+        .status(400)
+        .send({ error: "LIVE_REQUIRES_EXPLICIT_CONFIRMATION" });
+    }
+    const error = await assertLiveReady(config, db, user.id);
+    if (error) return reply.status(400).send({ error });
+    const id = (req.params as any).id as string;
+    return positions.convertPaperToLive(user.id, id);
+  });
+
   app.post("/api/positions/:id/exit", async (req) => {
     const user = await requireUser(req, db);
     const id = (req.params as any).id as string;

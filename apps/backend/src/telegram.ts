@@ -26,7 +26,11 @@ export class TelegramController {
     this.registerHandlers();
   }
 
-  async notify(chatId: string, text: string, buttons?: Array<Array<{ text: string; callback_data: string }>>) {
+  async notify(
+    chatId: string,
+    text: string,
+    buttons?: Array<Array<{ text: string; callback_data: string }>>,
+  ) {
     const keyboard = buttons ? new InlineKeyboard() : undefined;
     if (keyboard && buttons) {
       for (const row of buttons) {
@@ -46,17 +50,33 @@ export class TelegramController {
       await this.bot.api.setMyCommands([
         { command: "start", description: "Register this Telegram account" },
         { command: "login", description: "Get a one-time web login code" },
-        { command: "follow", description: "Follow a FOMO trader: /follow @handle" },
+        {
+          command: "follow",
+          description: "Follow a FOMO trader: /follow @handle",
+        },
         { command: "following", description: "List followed traders" },
         { command: "unfollow", description: "Stop following a config" },
         { command: "positions", description: "List open positions" },
         { command: "wallet", description: "Show your dedicated copy wallet" },
         { command: "live", description: "Request live mode for a config" },
         { command: "paper", description: "Return a config to paper mode" },
-        { command: "liveall", description: "Request live mode for all followed traders" },
-        { command: "paperall", description: "Return all followed traders to paper mode" },
-        { command: "topups", description: "Toggle top-up copying for a config" },
-        { command: "exits", description: "Toggle leader exit mirroring for a config" },
+        {
+          command: "liveall",
+          description: "Request live mode for all followed traders",
+        },
+        {
+          command: "paperall",
+          description: "Return all followed traders to paper mode",
+        },
+        {
+          command: "topups",
+          description: "Toggle top-up copying for a config",
+        },
+        {
+          command: "exits",
+          description: "Toggle leader exit mirroring for a config",
+        },
+        { command: "maxhold", description: "Set max hold for a config" },
         { command: "pause", description: "Pause new copied entries" },
         { command: "resume", description: "Resume automatic copying" },
         { command: "help", description: "Show commands" },
@@ -64,7 +84,9 @@ export class TelegramController {
     } catch (error) {
       console.error("telegram_set_commands_failed", String(error));
     }
-    this.bot.catch((error) => console.error("telegram_bot_error", String(error.error)));
+    this.bot.catch((error) =>
+      console.error("telegram_bot_error", String(error.error)),
+    );
     this.bot.start({ onStart: () => console.log("telegram_bot_started") });
   }
 
@@ -76,17 +98,30 @@ export class TelegramController {
 
   private async userFromContext(ctx: any) {
     if (!this.allowed(ctx.from?.id)) {
-      await ctx.reply("This bot is private. Your Telegram account is not allowlisted.");
+      await ctx.reply(
+        "This bot is private. Your Telegram account is not allowlisted.",
+      );
       return null;
     }
-    const displayName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ") || ctx.from?.username || String(ctx.from.id);
+    const displayName =
+      [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(" ") ||
+      ctx.from?.username ||
+      String(ctx.from.id);
     const user = await this.db.upsertTelegramUser({
       telegramUserId: String(ctx.from.id),
       chatId: String(ctx.chat.id),
       displayName,
     });
-    const bootstrap = this.config.bootstrapUsers.find((x) => x.telegramUserId === String(ctx.from.id));
-    if (bootstrap) await this.db.upsertCopyWallet(user.id, "solana", bootstrap.solanaAddress, bootstrap.signerRef);
+    const bootstrap = this.config.bootstrapUsers.find(
+      (x) => x.telegramUserId === String(ctx.from.id),
+    );
+    if (bootstrap)
+      await this.db.upsertCopyWallet(
+        user.id,
+        "solana",
+        bootstrap.solanaAddress,
+        bootstrap.signerRef,
+      );
     return user;
   }
 
@@ -94,7 +129,9 @@ export class TelegramController {
     this.bot.command("start", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
-      await ctx.reply("CopyBot is connected to this Telegram account. New configs start in PAPER mode. Use /login for the web dashboard or /follow @handle to add a FOMO trader.");
+      await ctx.reply(
+        "CopyBot is connected to this Telegram account. New configs start in PAPER mode. Use /login for the web dashboard or /follow @handle to add a FOMO trader.",
+      );
     });
 
     this.bot.command("login", async (ctx) => {
@@ -103,10 +140,22 @@ export class TelegramController {
       let code = "";
       for (let i = 0; i < 5; i++) {
         const candidate = randomLoginCode();
-        if (await this.db.createLoginCode(user.id, candidate, new Date(Date.now() + 5 * 60_000))) { code = candidate; break; }
+        if (
+          await this.db.createLoginCode(
+            user.id,
+            candidate,
+            new Date(Date.now() + 5 * 60_000),
+          )
+        ) {
+          code = candidate;
+          break;
+        }
       }
-      if (!code) return void ctx.reply("Could not create a login code. Try again.");
-      await ctx.reply(`Web login code: ${code}\nExpires in 5 minutes.\n${this.config.PUBLIC_APP_URL}`);
+      if (!code)
+        return void ctx.reply("Could not create a login code. Try again.");
+      await ctx.reply(
+        `Web login code: ${code}\nExpires in 5 minutes.\n${this.config.PUBLIC_APP_URL}`,
+      );
     });
 
     this.bot.command("follow", async (ctx) => {
@@ -118,10 +167,17 @@ export class TelegramController {
         const result = await this.traders.resolveFomo(handle);
         const cleanHandle = String(result.identity.handle).replace(/^@/, "");
         const wallets = [
-          result.identity.solanaAddress ? `SOL: ${result.identity.solanaAddress}` : "SOL: not resolved",
-          result.identity.evmAddress ? `EVM: ${result.identity.evmAddress}` : "EVM: not resolved",
+          result.identity.solanaAddress
+            ? `SOL: ${result.identity.solanaAddress}`
+            : "SOL: not resolved",
+          result.identity.evmAddress
+            ? `EVM: ${result.identity.evmAddress}`
+            : "EVM: not resolved",
         ].join("\n");
-        const kb = new InlineKeyboard().text("Confirm & follow", `confirm_follow_fomo:${cleanHandle}`).row().text("Cancel", "noop");
+        const kb = new InlineKeyboard()
+          .text("Confirm & follow", `confirm_follow_fomo:${cleanHandle}`)
+          .row()
+          .text("Cancel", "noop");
         await ctx.reply(
           `Trader resolved\n@${cleanHandle}\n${wallets}\n\nV1 copies Solana entries only. Confirm before this trader is added to your watched list.`,
           { reply_markup: kb },
@@ -141,7 +197,10 @@ export class TelegramController {
           `✅ Following @${result.identity.handle}\nSOL: ${result.identity.solanaAddress}\n${result.identity.evmAddress ? `EVM: ${result.identity.evmAddress}\n` : ""}Config: $${result.config?.tradeAmountUsd ?? 10}/entry, PAPER mode by default.`,
         );
       } catch (error) {
-        await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: String(error).slice(0, 180),
+          show_alert: true,
+        });
       }
     });
 
@@ -149,23 +208,37 @@ export class TelegramController {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       const rows = await this.db.listUserTraders(user.id);
-      if (!rows.length) return void ctx.reply("You are not following any traders yet.");
+      if (!rows.length)
+        return void ctx.reply("You are not following any traders yet.");
       for (const r of rows) {
         const kb = new InlineKeyboard()
-          .text(r.copy_topups ? "Turn top-ups off" : "Copy top-ups", `topups:${r.copy_topups ? "off" : "on"}:${r.config_id}`)
+          .text(
+            r.copy_topups ? "Turn top-ups off" : "Copy top-ups",
+            `topups:${r.copy_topups ? "off" : "on"}:${r.config_id}`,
+          )
           .row()
-          .text(r.mirror_exits ? "Mirror exits off" : "Mirror exits on", `exits:${r.mirror_exits ? "off" : "on"}:${r.config_id}`)
+          .text(
+            r.mirror_exits ? "Mirror exits off" : "Mirror exits on",
+            `exits:${r.mirror_exits ? "off" : "on"}:${r.config_id}`,
+          )
           .row()
-          .text(r.dry_run ? "Enable live" : "Paper mode", r.dry_run ? `confirm_live:${r.config_id}` : `paper:${r.config_id}`)
+          .text("Max 4h", `maxhold:14400:${r.config_id}`)
+          .text("Max 12h", `maxhold:43200:${r.config_id}`)
+          .text("Max off", `maxhold:off:${r.config_id}`)
+          .row()
+          .text(
+            r.dry_run ? "Enable live" : "Paper mode",
+            r.dry_run ? `confirm_live:${r.config_id}` : `paper:${r.config_id}`,
+          )
           .text("Unfollow", `unfollow:${r.config_id}`);
         await ctx.reply(
           `${r.enabled ? "🟢" : "⚪"} ${r.handle ? `@${r.handle}` : r.display_name}\n` +
-          `Config: ${r.config_id}\n` +
-          `Mode: ${r.dry_run ? "PAPER" : "LIVE"}\n` +
-          `Entry size: $${Number(r.trade_amount_usd).toFixed(2)}\n` +
-          `Top-ups: ${r.copy_topups ? "ON — copied as another fixed-size buy" : "OFF — skipped"}\n` +
-          `Mirror exits: ${r.mirror_exits ? "ON — sell your matching position when leader fully exits" : "OFF — notify only"}\n` +
-          `TP: ${r.take_profit_pct ?? "off"}% · SL: ${r.stop_loss_pct ?? "off"}%`,
+            `Config: ${r.config_id}\n` +
+            `Mode: ${r.dry_run ? "PAPER" : "LIVE"}\n` +
+            `Entry size: $${Number(r.trade_amount_usd).toFixed(2)}\n` +
+            `Top-ups: ${r.copy_topups ? "ON — copied as another fixed-size buy" : "OFF — skipped"}\n` +
+            `Mirror exits: ${r.mirror_exits ? "ON — sell your matching position when leader fully exits" : "OFF — notify only"}\n` +
+            `TP: ${r.take_profit_pct ?? "off"}% · SL: ${r.stop_loss_pct ?? "off"}% · Max hold: ${formatMaxHold(r.max_hold_seconds)}`,
           { reply_markup: kb },
         );
       }
@@ -178,7 +251,9 @@ export class TelegramController {
       if (!id) return void ctx.reply("Usage: /unfollow <config-id>");
       try {
         await this.traders.unfollow(user.id, id);
-        await ctx.reply("Trader unfollowed. Its config was returned to PAPER and disabled.");
+        await ctx.reply(
+          "Trader unfollowed. Its config was returned to PAPER and disabled.",
+        );
       } catch (error) {
         await ctx.reply(`Could not unfollow: ${String(error)}`);
       }
@@ -189,9 +264,14 @@ export class TelegramController {
       if (!user) return;
       try {
         const result = await this.traders.unfollow(user.id, ctx.match[1]);
-        await ctx.editMessageText(`Trader unfollowed: ${result.trader}. Existing positions remain manageable.`);
+        await ctx.editMessageText(
+          `Trader unfollowed: ${result.trader}. Existing positions remain manageable.`,
+        );
       } catch (error) {
-        await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: String(error).slice(0, 180),
+          show_alert: true,
+        });
       }
     });
 
@@ -201,38 +281,59 @@ export class TelegramController {
       const rows = await this.db.listOpenPositions(user.id);
       if (!rows.length) return void ctx.reply("No open positions.");
       for (const p of rows) {
-        const market = await this.prices.getTokenMarket(p.token).catch(() => null);
+        const market = await this.prices
+          .getTokenMarket(p.token)
+          .catch(() => null);
         const qty = Number(p.qty);
         const cost = Number(p.cost_usd);
         const currentValue = market ? qty * market.priceUsd : null;
-        const pnlPct = currentValue == null || cost <= 0 ? null : ((currentValue - cost) / cost) * 100;
+        const pnlPct =
+          currentValue == null || cost <= 0
+            ? null
+            : ((currentValue - cost) / cost) * 100;
         const symbol = market?.symbol ?? shortAddress(p.token);
         const source = p.handle ? `@${p.handle}` : p.display_name;
         const kb = new InlineKeyboard()
-          .text(p.mode === "paper" ? "Close 25%" : "Sell 25%", `exit:25:${p.id}`)
-          .text(p.mode === "paper" ? "Close 50%" : "Sell 50%", `exit:50:${p.id}`).row()
-          .text(p.mode === "paper" ? "Close 75%" : "Sell 75%", `exit:75:${p.id}`)
-          .text(p.mode === "paper" ? "Close 100%" : "Sell 100%", `exit:100:${p.id}`);
+          .text(
+            p.mode === "paper" ? "Close 25%" : "Sell 25%",
+            `exit:25:${p.id}`,
+          )
+          .text(
+            p.mode === "paper" ? "Close 50%" : "Sell 50%",
+            `exit:50:${p.id}`,
+          )
+          .row()
+          .text(
+            p.mode === "paper" ? "Close 75%" : "Sell 75%",
+            `exit:75:${p.id}`,
+          )
+          .text(
+            p.mode === "paper" ? "Close 100%" : "Sell 100%",
+            `exit:100:${p.id}`,
+          );
+        if (p.mode === "paper") {
+          kb.row().text("Convert to LIVE", `confirm_convert_live:${p.id}`);
+        }
         await ctx.reply(
           `${p.mode === "paper" ? "🟡 PAPER" : "🟢 LIVE"} position — ${symbol}
 ` +
-          `Token: ${shortAddress(p.token)}
+            `Token: ${shortAddress(p.token)}
 ` +
-          `Source: ${source}
+            `Source: ${source}
 ` +
-          `Cost: $${cost.toFixed(2)}
+            `Cost: $${cost.toFixed(2)}
 ` +
-          `Value: ${currentValue == null ? "unknown" : `$${currentValue.toFixed(2)}`}
+            `Value: ${currentValue == null ? "unknown" : `$${currentValue.toFixed(2)}`}
 ` +
-          `PnL: ${pnlPct == null ? "unknown" : `${pnlPct.toFixed(1)}%`}
+            `PnL: ${pnlPct == null ? "unknown" : `${pnlPct.toFixed(1)}%`}
 ` +
-          `Entry: $${Number(p.avg_entry_price).toPrecision(6)}
+            `Entry: $${Number(p.avg_entry_price).toPrecision(6)}
 ` +
-          `Current: ${market ? `$${market.priceUsd.toPrecision(6)}` : "unknown"}
+            `Current: ${market ? `$${market.priceUsd.toPrecision(6)}` : "unknown"}
 ` +
-          `TP: ${p.take_profit_pct ?? "off"}% · SL: ${p.stop_loss_pct ?? "off"}%
+            `TP: ${p.take_profit_pct ?? "off"}% · SL: ${p.stop_loss_pct ?? "off"}%
 ` +
-          `${positionDistanceText(p, pnlPct)}`,
+            `${positionDistanceText(p, pnlPct)}`,
           { reply_markup: kb },
         );
       }
@@ -242,21 +343,31 @@ export class TelegramController {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       const wallet = await this.db.getCopyWallet(user.id, "solana");
-      if (!wallet) return void ctx.reply("No Solana copy wallet is configured for your Telegram account.");
+      if (!wallet)
+        return void ctx.reply(
+          "No Solana copy wallet is configured for your Telegram account.",
+        );
       const [solLamports, usdcRaw] = await Promise.all([
         this.rpc.solBalance(wallet.public_address).catch(() => null),
-        this.rpc.tokenBalanceRaw(wallet.public_address, SOLANA_USDC).catch(() => null),
+        this.rpc
+          .tokenBalanceRaw(wallet.public_address, SOLANA_USDC)
+          .catch(() => null),
       ]);
-      const sol = solLamports == null ? "?" : (Number(solLamports) / 1e9).toFixed(4);
+      const sol =
+        solLamports == null ? "?" : (Number(solLamports) / 1e9).toFixed(4);
       const usdc = usdcRaw == null ? "?" : (Number(usdcRaw) / 1e6).toFixed(2);
-      await ctx.reply(`Copy wallet\n${wallet.public_address}\nUSDC: $${usdc}\nSOL: ${sol}\nSigning key is never stored in Telegram or Postgres.`);
+      await ctx.reply(
+        `Copy wallet\n${wallet.public_address}\nUSDC: $${usdc}\nSOL: ${sol}\nSigning key is never stored in Telegram or Postgres.`,
+      );
     });
 
     this.bot.command("pause", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       await this.db.setUserPaused(user.id, true);
-      await ctx.reply("⏸ New copied entries are paused. Existing TP/SL/max-hold protection remains active, and manual exits still work.");
+      await ctx.reply(
+        "⏸ New copied entries are paused. Existing TP/SL/max-hold protection remains active, and manual exits still work.",
+      );
     });
 
     this.bot.command("resume", async (ctx) => {
@@ -271,25 +382,46 @@ export class TelegramController {
       if (!user) return;
       const id = ctx.match?.trim();
       if (!id) return void ctx.reply("Usage: /paper <config-id>");
-      const updated = await this.db.updateCopyConfig(user.id, id, { dryRun: true });
-      await ctx.reply(updated ? "Config returned to PAPER mode." : "Config not found.");
+      const updated = await this.db.updateCopyConfig(user.id, id, {
+        dryRun: true,
+      });
+      await ctx.reply(
+        updated ? "Config returned to PAPER mode." : "Config not found.",
+      );
     });
 
     this.bot.callbackQuery(/^paper:(.+)$/, async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
-      const updated = await this.db.updateCopyConfig(user.id, ctx.match[1], { dryRun: true });
-      if (!updated) return void ctx.answerCallbackQuery({ text: "Config not found", show_alert: true });
-      await ctx.editMessageText("Config returned to PAPER mode. Future entries are simulated; existing live positions remain real.");
+      const updated = await this.db.updateCopyConfig(user.id, ctx.match[1], {
+        dryRun: true,
+      });
+      if (!updated)
+        return void ctx.answerCallbackQuery({
+          text: "Config not found",
+          show_alert: true,
+        });
+      await ctx.editMessageText(
+        "Config returned to PAPER mode. Future entries are simulated; existing live positions remain real.",
+      );
     });
 
     this.bot.command("topups", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
-      const [id, state] = String(ctx.match ?? "").trim().split(/\s+/);
-      if (!id || !["on", "off"].includes(state)) return void ctx.reply("Usage: /topups <config-id> on|off");
-      const updated = await this.db.updateCopyConfig(user.id, id, { copyTopups: state === "on" });
-      await ctx.reply(updated ? `Top-up copying is now ${state.toUpperCase()} for this config.` : "Config not found.");
+      const [id, state] = String(ctx.match ?? "")
+        .trim()
+        .split(/\s+/);
+      if (!id || !["on", "off"].includes(state))
+        return void ctx.reply("Usage: /topups <config-id> on|off");
+      const updated = await this.db.updateCopyConfig(user.id, id, {
+        copyTopups: state === "on",
+      });
+      await ctx.reply(
+        updated
+          ? `Top-up copying is now ${state.toUpperCase()} for this config.`
+          : "Config not found.",
+      );
     });
 
     this.bot.callbackQuery(/^topups:(on|off):(.+)$/, async (ctx) => {
@@ -297,19 +429,36 @@ export class TelegramController {
       if (!user) return;
       const state = ctx.match[1] as "on" | "off";
       const id = ctx.match[2];
-      const updated = await this.db.updateCopyConfig(user.id, id, { copyTopups: state === "on" });
-      if (!updated) return void ctx.answerCallbackQuery({ text: "Config not found", show_alert: true });
+      const updated = await this.db.updateCopyConfig(user.id, id, {
+        copyTopups: state === "on",
+      });
+      if (!updated)
+        return void ctx.answerCallbackQuery({
+          text: "Config not found",
+          show_alert: true,
+        });
       await ctx.answerCallbackQuery({ text: `Top-ups ${state.toUpperCase()}` });
-      await ctx.editMessageText(`Top-up copying is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader adds more to an existing token, CopyBot will treat it as another fixed-size entry using your configured amount." : "Leader top-ups will be detected but skipped."}`);
+      await ctx.editMessageText(
+        `Top-up copying is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader adds more to an existing token, CopyBot will treat it as another fixed-size entry using your configured amount." : "Leader top-ups will be detected but skipped."}`,
+      );
     });
 
     this.bot.command("exits", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
-      const [id, state] = String(ctx.match ?? "").trim().split(/\s+/);
-      if (!id || !["on", "off"].includes(state)) return void ctx.reply("Usage: /exits <config-id> on|off");
-      const updated = await this.db.updateCopyConfig(user.id, id, { mirrorExits: state === "on" });
-      await ctx.reply(updated ? `Mirror exits is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader fully exits a token, CopyBot will attempt to sell your matching open position. Partial leader sells still notify only." : "Leader exits will notify only; your positions remain managed by TP/SL/manual exits."}` : "Config not found.");
+      const [id, state] = String(ctx.match ?? "")
+        .trim()
+        .split(/\s+/);
+      if (!id || !["on", "off"].includes(state))
+        return void ctx.reply("Usage: /exits <config-id> on|off");
+      const updated = await this.db.updateCopyConfig(user.id, id, {
+        mirrorExits: state === "on",
+      });
+      await ctx.reply(
+        updated
+          ? `Mirror exits is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader fully exits a token, CopyBot will attempt to sell your matching open position. Partial leader sells still notify only." : "Leader exits will notify only; your positions remain managed by TP/SL/manual exits."}`
+          : "Config not found.",
+      );
     });
 
     this.bot.callbackQuery(/^exits:(on|off):(.+)$/, async (ctx) => {
@@ -317,17 +466,80 @@ export class TelegramController {
       if (!user) return;
       const state = ctx.match[1] as "on" | "off";
       const id = ctx.match[2];
-      const updated = await this.db.updateCopyConfig(user.id, id, { mirrorExits: state === "on" });
-      if (!updated) return void ctx.answerCallbackQuery({ text: "Config not found", show_alert: true });
-      await ctx.answerCallbackQuery({ text: `Mirror exits ${state.toUpperCase()}` });
-      await ctx.editMessageText(`Mirror exits is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader fully exits a token, CopyBot will attempt to sell your matching open position. Partial leader sells still notify only." : "Leader exits will notify only; your positions remain managed by TP/SL/manual exits."}`);
+      const updated = await this.db.updateCopyConfig(user.id, id, {
+        mirrorExits: state === "on",
+      });
+      if (!updated)
+        return void ctx.answerCallbackQuery({
+          text: "Config not found",
+          show_alert: true,
+        });
+      await ctx.answerCallbackQuery({
+        text: `Mirror exits ${state.toUpperCase()}`,
+      });
+      await ctx.editMessageText(
+        `Mirror exits is now ${state.toUpperCase()} for this config.\n\n${state === "on" ? "When the leader fully exits a token, CopyBot will attempt to sell your matching open position. Partial leader sells still notify only." : "Leader exits will notify only; your positions remain managed by TP/SL/manual exits."}`,
+      );
     });
+
+    this.bot.command("maxhold", async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const [id, value] = String(ctx.match ?? "")
+        .trim()
+        .split(/\s+/);
+      const seconds = parseMaxHold(value);
+      if (!id || seconds === undefined)
+        return void ctx.reply(
+          "Usage: /maxhold <config-id> <off|30m|1h|4h|12h|24h|72h>",
+        );
+      const updated = await this.db.updateCopyConfig(user.id, id, {
+        maxHoldSeconds: seconds,
+      });
+      await ctx.reply(
+        updated
+          ? `Max hold is now ${formatMaxHold(seconds)} for this config.`
+          : "Config not found.",
+      );
+    });
+
+    this.bot.callbackQuery(
+      /^maxhold:(off|1800|3600|14400|43200|86400|259200):(.+)$/,
+      async (ctx) => {
+        const user = await this.userFromContext(ctx);
+        if (!user) return;
+        const raw = ctx.match[1];
+        const id = ctx.match[2];
+        const seconds = parseMaxHold(raw);
+        if (seconds === undefined)
+          return void ctx.answerCallbackQuery({
+            text: "Unsupported max hold",
+            show_alert: true,
+          });
+        const updated = await this.db.updateCopyConfig(user.id, id, {
+          maxHoldSeconds: seconds,
+        });
+        if (!updated)
+          return void ctx.answerCallbackQuery({
+            text: "Config not found",
+            show_alert: true,
+          });
+        await ctx.answerCallbackQuery({
+          text: `Max hold ${formatMaxHold(seconds)}`,
+        });
+        await ctx.editMessageText(
+          `Max hold is now ${formatMaxHold(seconds)} for this config. ${seconds == null ? "CopyBot will not exit this config based on age." : "Open positions for this config can exit with MAX_HOLD after this age."}`,
+        );
+      },
+    );
 
     this.bot.command("paperall", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       const updated = await this.db.setAllCopyConfigsMode(user.id, true);
-      await ctx.reply(`All followed traders returned to PAPER mode (${updated} config${updated === 1 ? "" : "s"}). Existing live positions remain real and manageable.`);
+      await ctx.reply(
+        `All followed traders returned to PAPER mode (${updated} config${updated === 1 ? "" : "s"}). Existing live positions remain real and manageable.`,
+      );
     });
 
     this.bot.command("live", async (ctx) => {
@@ -336,18 +548,32 @@ export class TelegramController {
       const id = ctx.match?.trim();
       if (!id) return void ctx.reply("Usage: /live <config-id>");
       const current = await this.db.getCopyConfig(id);
-      if (!current || current.userId !== user.id) return void ctx.reply("Config not found.");
-      const kb = new InlineKeyboard().text("I understand — enable LIVE", `confirm_live:${id}`).row().text("Cancel", "noop");
-      await ctx.reply("⚠️ LIVE mode can spend real funds from your dedicated copy wallet. Confirm explicitly. New configs never become live automatically.", { reply_markup: kb });
+      if (!current || current.userId !== user.id)
+        return void ctx.reply("Config not found.");
+      const kb = new InlineKeyboard()
+        .text("I understand — enable LIVE", `confirm_live:${id}`)
+        .row()
+        .text("Cancel", "noop");
+      await ctx.reply(
+        "⚠️ LIVE mode can spend real funds from your dedicated copy wallet. Confirm explicitly. New configs never become live automatically.",
+        { reply_markup: kb },
+      );
     });
 
     this.bot.command("liveall", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       const rows = await this.db.listUserTraders(user.id);
-      if (!rows.length) return void ctx.reply("You are not following any traders yet.");
-      const kb = new InlineKeyboard().text("I understand — enable LIVE for all", "confirm_live_all").row().text("Cancel", "noop");
-      await ctx.reply(`⚠️ Enable LIVE for all ${rows.length} followed trader${rows.length === 1 ? "" : "s"}?\n\nFuture qualifying entries for any followed trader can spend real funds from your copy wallet. Confirm explicitly.`, { reply_markup: kb });
+      if (!rows.length)
+        return void ctx.reply("You are not following any traders yet.");
+      const kb = new InlineKeyboard()
+        .text("I understand — enable LIVE for all", "confirm_live_all")
+        .row()
+        .text("Cancel", "noop");
+      await ctx.reply(
+        `⚠️ Enable LIVE for all ${rows.length} followed trader${rows.length === 1 ? "" : "s"}?\n\nFuture qualifying entries for any followed trader can spend real funds from your copy wallet. Confirm explicitly.`,
+        { reply_markup: kb },
+      );
     });
 
     this.bot.callbackQuery(/^confirm_live:(.+)$/, async (ctx) => {
@@ -355,34 +581,62 @@ export class TelegramController {
       if (!user) return;
       const id = ctx.match[1];
       const current = await this.db.getCopyConfig(id);
-      if (!current || current.userId !== user.id) return void ctx.answerCallbackQuery({ text: "Config not found" });
+      if (!current || current.userId !== user.id)
+        return void ctx.answerCallbackQuery({ text: "Config not found" });
       const wallet = await this.db.getCopyWallet(user.id, "solana");
-      if (!wallet) return void ctx.answerCallbackQuery({ text: "No copy wallet configured" });
-      if (!this.config.JUPITER_API_KEY) return void ctx.answerCallbackQuery({ text: "Live trading is not ready: Jupiter API key is missing", show_alert: true });
+      if (!wallet)
+        return void ctx.answerCallbackQuery({
+          text: "No copy wallet configured",
+        });
+      if (!this.config.JUPITER_API_KEY)
+        return void ctx.answerCallbackQuery({
+          text: "Live trading is not ready: Jupiter API key is missing",
+          show_alert: true,
+        });
       try {
         const signer = loadSolanaSigner(wallet.signer_ref);
-        if (signer.publicKey.toBase58() !== wallet.public_address) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
+        if (signer.publicKey.toBase58() !== wallet.public_address)
+          throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
       } catch (error) {
-        return void ctx.answerCallbackQuery({ text: `Live trading is not ready: ${String(error).slice(0, 120)}`, show_alert: true });
+        return void ctx.answerCallbackQuery({
+          text: `Live trading is not ready: ${String(error).slice(0, 120)}`,
+          show_alert: true,
+        });
       }
       await this.db.updateCopyConfig(user.id, id, { dryRun: false });
-      await ctx.editMessageText("🔴 LIVE mode enabled for this config. Real trades may now execute under its rules.");
+      await ctx.editMessageText(
+        "🔴 LIVE mode enabled for this config. Real trades may now execute under its rules.",
+      );
     });
 
     this.bot.callbackQuery("confirm_live_all", async (ctx) => {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       const wallet = await this.db.getCopyWallet(user.id, "solana");
-      if (!wallet) return void ctx.answerCallbackQuery({ text: "No copy wallet configured", show_alert: true });
-      if (!this.config.JUPITER_API_KEY) return void ctx.answerCallbackQuery({ text: "Live trading is not ready: Jupiter API key is missing", show_alert: true });
+      if (!wallet)
+        return void ctx.answerCallbackQuery({
+          text: "No copy wallet configured",
+          show_alert: true,
+        });
+      if (!this.config.JUPITER_API_KEY)
+        return void ctx.answerCallbackQuery({
+          text: "Live trading is not ready: Jupiter API key is missing",
+          show_alert: true,
+        });
       try {
         const signer = loadSolanaSigner(wallet.signer_ref);
-        if (signer.publicKey.toBase58() !== wallet.public_address) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
+        if (signer.publicKey.toBase58() !== wallet.public_address)
+          throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
       } catch (error) {
-        return void ctx.answerCallbackQuery({ text: `Live trading is not ready: ${String(error).slice(0, 120)}`, show_alert: true });
+        return void ctx.answerCallbackQuery({
+          text: `Live trading is not ready: ${String(error).slice(0, 120)}`,
+          show_alert: true,
+        });
       }
       const updated = await this.db.setAllCopyConfigsMode(user.id, false);
-      await ctx.editMessageText(`🔴 LIVE mode enabled for ${updated} followed trader${updated === 1 ? "" : "s"}. Real trades may now execute under their rules.`);
+      await ctx.editMessageText(
+        `🔴 LIVE mode enabled for ${updated} followed trader${updated === 1 ? "" : "s"}. Real trades may now execute under their rules.`,
+      );
     });
 
     this.bot.callbackQuery(/^exit:(25|50|75|100):(.+)$/, async (ctx) => {
@@ -394,7 +648,62 @@ export class TelegramController {
         await this.positions.exit(user.id, positionId, pct, "MANUAL_EXIT");
         await ctx.answerCallbackQuery({ text: `Exit ${pct}% requested` });
       } catch (error) {
-        await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: String(error).slice(0, 180),
+          show_alert: true,
+        });
+      }
+    });
+
+    this.bot.callbackQuery(/^confirm_convert_live:(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      const position = await this.db.getPositionForUser(user.id, ctx.match[1]);
+      if (
+        !position ||
+        position.status !== "open" ||
+        position.mode !== "paper"
+      ) {
+        return void ctx.answerCallbackQuery({
+          text: "Paper position not found",
+          show_alert: true,
+        });
+      }
+      await ctx.answerCallbackQuery();
+      await ctx.reply(
+        `Convert PAPER → LIVE?\n\nToken: ${shortAddress(position.token)}\nAmount: about $${Number(position.cost_usd).toFixed(2)} USDC\n\nThis submits a real buy now. Paper PnL does not become real retroactively.`,
+        {
+          reply_markup: new InlineKeyboard()
+            .text("Confirm live buy", `convert_live:${position.id}`)
+            .text("Cancel", "noop"),
+        },
+      );
+    });
+
+    this.bot.callbackQuery(/^convert_live:(.+)$/, async (ctx) => {
+      const user = await this.userFromContext(ctx);
+      if (!user) return;
+      try {
+        const result = await this.positions.convertPaperToLive(
+          user.id,
+          ctx.match[1],
+        );
+        await ctx.answerCallbackQuery({
+          text:
+            result.status === "submitted_unknown"
+              ? "Submitted; status unknown"
+              : "Converted to live",
+        });
+        await ctx.reply(
+          result.status === "submitted_unknown"
+            ? "Live buy submitted, but confirmation is unknown. The bot will reconcile it."
+            : "Paper position converted to LIVE.",
+        );
+      } catch (error) {
+        await ctx.answerCallbackQuery({
+          text: String(error).slice(0, 180),
+          show_alert: true,
+        });
       }
     });
 
@@ -405,7 +714,10 @@ export class TelegramController {
         await this.retryExecutions.retry(user.id, ctx.match[1]);
         await ctx.answerCallbackQuery({ text: "Retry requested" });
       } catch (error) {
-        await ctx.answerCallbackQuery({ text: String(error).slice(0, 180), show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: String(error).slice(0, 180),
+          show_alert: true,
+        });
       }
     });
 
@@ -413,15 +725,53 @@ export class TelegramController {
       const user = await this.userFromContext(ctx);
       if (!user) return;
       const p = await this.db.getPositionForUser(user.id, ctx.match[1]);
-      if (!p) return void ctx.answerCallbackQuery({ text: "Position not found" });
+      if (!p)
+        return void ctx.answerCallbackQuery({ text: "Position not found" });
       await ctx.answerCallbackQuery();
-      await ctx.reply(`${p.token}\nMode: ${p.mode}\nQty: ${p.qty}\nCost: $${Number(p.cost_usd).toFixed(2)}\nEntry: $${Number(p.avg_entry_price)}`);
+      await ctx.reply(
+        `${p.token}\nMode: ${p.mode}\nQty: ${p.qty}\nCost: $${Number(p.cost_usd).toFixed(2)}\nEntry: $${Number(p.avg_entry_price)}`,
+      );
     });
 
     this.bot.callbackQuery("noop", (ctx) => ctx.answerCallbackQuery());
 
-    this.bot.command("help", (ctx) => ctx.reply("/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall · /topups <config-id> on|off · /exits <config-id> on|off"));
+    this.bot.command("help", (ctx) =>
+      ctx.reply(
+        "/follow @handle · /following · /unfollow <config-id> · /positions · /wallet · /login · /pause · /resume · /live <config-id> · /paper <config-id> · /liveall · /paperall · /topups <config-id> on|off · /exits <config-id> on|off · /maxhold <config-id> <off|30m|1h|4h|12h|24h|72h>",
+      ),
+    );
   }
+}
+
+function parseMaxHold(value: string | undefined) {
+  if (!value) return undefined;
+  const clean = value.trim().toLowerCase();
+  if (clean === "off" || clean === "none" || clean === "0") return null;
+  const presets: Record<string, number> = {
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "12h": 43200,
+    "24h": 86400,
+    "72h": 259200,
+    "1800": 1800,
+    "3600": 3600,
+    "14400": 14400,
+    "43200": 43200,
+    "86400": 86400,
+    "259200": 259200,
+  };
+  return presets[clean];
+}
+
+function formatMaxHold(seconds: number | string | null | undefined) {
+  if (seconds == null || seconds === "") return "off";
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return "off";
+  if (value % 86400 === 0) return `${value / 86400}d`;
+  if (value % 3600 === 0) return `${value / 3600}h`;
+  if (value % 60 === 0) return `${value / 60}m`;
+  return `${value}s`;
 }
 
 function shortAddress(value: string) {
@@ -430,7 +780,13 @@ function shortAddress(value: string) {
 
 function positionDistanceText(p: any, pnlPct: number | null) {
   if (pnlPct == null) return "TP/SL distance unavailable until pricing loads.";
-  const tp = p.take_profit_pct == null ? "TP off" : `TP ${Number(p.take_profit_pct).toFixed(1)}% · ${(Number(p.take_profit_pct) - pnlPct).toFixed(1)}% remaining`;
-  const sl = p.stop_loss_pct == null ? "SL off" : `SL -${Number(p.stop_loss_pct).toFixed(1)}% · ${(pnlPct + Number(p.stop_loss_pct)).toFixed(1)}% buffer`;
+  const tp =
+    p.take_profit_pct == null
+      ? "TP off"
+      : `TP ${Number(p.take_profit_pct).toFixed(1)}% · ${(Number(p.take_profit_pct) - pnlPct).toFixed(1)}% remaining`;
+  const sl =
+    p.stop_loss_pct == null
+      ? "SL off"
+      : `SL -${Number(p.stop_loss_pct).toFixed(1)}% · ${(pnlPct + Number(p.stop_loss_pct)).toFixed(1)}% buffer`;
   return `PnL ${pnlPct.toFixed(1)}% | ${tp} | ${sl}`;
 }
