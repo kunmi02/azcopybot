@@ -8,6 +8,16 @@ export type EarlyBuyer = {
   metadata: Record<string, unknown>;
 };
 
+export type WalletSwap = {
+  signature: string;
+  timestamp: Date;
+  side: "buy" | "sell";
+  token: string;
+  tokenAmount: number | null;
+  quoteAmount: number | null;
+  feePayer: string | null;
+};
+
 export interface EarlyBuyerSource {
   provider: string;
   findEarlyBuyers(input: {
@@ -18,14 +28,29 @@ export interface EarlyBuyerSource {
   }): Promise<EarlyBuyer[]>;
 }
 
+export interface WalletSwapActivitySource {
+  provider: string;
+  findWalletSwaps(input: {
+    wallet: string;
+    limit: number;
+    quoteMints: string[];
+  }): Promise<WalletSwap[]>;
+}
+
 export class NoopEarlyBuyerSource implements EarlyBuyerSource {
   readonly provider = "none";
   async findEarlyBuyers(): Promise<EarlyBuyer[]> {
     throw new Error("EARLY_BUYER_PROVIDER_NOT_CONFIGURED");
   }
+
+  async findWalletSwaps(): Promise<WalletSwap[]> {
+    throw new Error("WALLET_ACTIVITY_PROVIDER_NOT_CONFIGURED");
+  }
 }
 
-export class HeliusEarlyBuyerSource implements EarlyBuyerSource {
+export class HeliusEarlyBuyerSource
+  implements EarlyBuyerSource, WalletSwapActivitySource
+{
   readonly provider = "helius";
   constructor(
     private readonly baseUrl: string,
@@ -117,4 +142,108 @@ export class HeliusEarlyBuyerSource implements EarlyBuyerSource {
     }
     return buyers;
   }
+
+  async findWalletSwaps(input: {
+    wallet: string;
+    limit: number;
+    quoteMints: string[];
+  }) {
+    const url = new URL(
+      `${this.baseUrl.replace(/\/$/, "")}/addresses/${input.wallet}/transactions`,
+    );
+    url.searchParams.set("api-key", this.apiKey);
+    url.searchParams.set("limit", String(Math.min(100, Math.max(10, input.limit))));
+    url.searchParams.set("type", "SWAP");
+    url.searchParams.set("token-accounts", "balanceChanged");
+    const res = await fetch(url);
+    if (!res.ok)
+      throw new Error(
+        `HELIUS_WALLET_SWAPS_HTTP_${res.status}:${await res.text().catch(() => "")}`.slice(
+          0,
+          500,
+        ),
+      );
+    const txs: any[] = await res.json();
+    if (!Array.isArray(txs)) return [];
+
+    const quoteSet = new Set(input.quoteMints);
+    const swaps: WalletSwap[] = [];
+    for (const tx of txs) {
+      if (!tx?.signature || !tx?.timestamp) continue;
+      const tokenTransfers: any[] = Array.isArray(tx.tokenTransfers)
+        ? tx.tokenTransfers
+        : [];
+      const nativeTransfers: any[] = Array.isArray(tx.nativeTransfers)
+        ? tx.nativeTransfers
+        : [];
+      const quoteOut = tokenTransfers
+        .filter(
+          (t) =>
+            quoteSet.has(String(t.mint)) &&
+            t.fromUserAccount === input.wallet &&
+            Number(t.tokenAmount) > 0,
+        )
+        .reduce((sum, t) => sum + Number(t.tokenAmount), 0);
+      const quoteIn = tokenTransfers
+        .filter(
+          (t) =>
+            quoteSet.has(String(t.mint)) &&
+            t.toUserAccount === input.wallet &&
+            Number(t.tokenAmount) > 0,
+        )
+        .reduce((sum, t) => sum + Number(t.tokenAmount), 0);
+      const solOut = nativeTransfers
+        .filter((t) => t.fromUserAccount === input.wallet && Number(t.amount) > 0)
+        .reduce((sum, t) => sum + Number(t.amount) / 1e9, 0);
+      const solIn = nativeTransfers
+        .filter((t) => t.toUserAccount === input.wallet && Number(t.amount) > 0)
+        .reduce((sum, t) => sum + Number(t.amount) / 1e9, 0);
+
+      for (const transfer of tokenTransfers) {
+        const mint = String(transfer.mint ?? "");
+        if (!mint || quoteSet.has(mint)) continue;
+        const amount = Number(transfer.tokenAmount);
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        if (transfer.toUserAccount === input.wallet && (quoteOut > 0 || solOut > 0)) {
+          swaps.push({
+            signature: String(tx.signature),
+            timestamp: new Date(Number(tx.timestamp) * 1000),
+            side: "buy",
+            token: mint,
+            tokenAmount: amount,
+            quoteAmount: quoteOut > 0 ? quoteOut : solOut > 0 ? null : null,
+            feePayer: tx.feePayer ?? null,
+          });
+        } else if (
+          transfer.fromUserAccount === input.wallet &&
+          (quoteIn > 0 || solIn > 0)
+        ) {
+          swaps.push({
+            signature: String(tx.signature),
+            timestamp: new Date(Number(tx.timestamp) * 1000),
+            side: "sell",
+            token: mint,
+            tokenAmount: amount,
+            quoteAmount: quoteIn > 0 ? quoteIn : solIn > 0 ? null : null,
+            feePayer: tx.feePayer ?? null,
+          });
+        }
+      }
+    }
+    return dedupeSwaps(swaps)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      .slice(0, input.limit);
+  }
+}
+
+function dedupeSwaps(swaps: WalletSwap[]) {
+  const seen = new Set<string>();
+  const out: WalletSwap[] = [];
+  for (const swap of swaps) {
+    const key = `${swap.signature}:${swap.side}:${swap.token}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(swap);
+  }
+  return out;
 }

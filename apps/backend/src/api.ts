@@ -208,6 +208,11 @@ export async function buildApi(
     return sourcing.candidateDetail((req.params as any).id as string);
   });
 
+  app.post("/api/sourcing/candidates/:id/analyze", async (req) => {
+    await requireUser(req, db);
+    return sourcing.analyzeCandidate((req.params as any).id as string);
+  });
+
   app.post("/api/sourcing/tokens/:mint/discover", async (req) => {
     await requireUser(req, db);
     const body = req.body as any;

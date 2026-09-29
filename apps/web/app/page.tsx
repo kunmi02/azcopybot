@@ -91,6 +91,21 @@ function shortToken(value: string) {
   return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
 
+function formatRecommendation(value?: string | null) {
+  if (!value) return "Not analyzed";
+  if (value === "STRONG_CANDIDATE") return "Strong candidate";
+  if (value === "PAPER_ONLY") return "Paper only";
+  if (value === "WATCH_MORE") return "Watch more";
+  if (value === "REJECT_BOT_OR_ROUTER_RISK") return "Reject: bot/router risk";
+  return value.replaceAll("_", " ").toLowerCase();
+}
+
+function recommendationClass(value?: string | null) {
+  if (value === "STRONG_CANDIDATE") return "live";
+  if (value === "REJECT_BOT_OR_ROUTER_RISK") return "danger";
+  return "paper";
+}
+
 async function request(path: string, token: string | null, init?: RequestInit) {
   const headers: Record<string, string> = { ...(init?.headers as any) };
   if (init?.body != null && !headers["content-type"]) {
@@ -267,6 +282,26 @@ export default function Home() {
       });
       setMessage(
         `Auto scan checked ${result.scanned} tokens, found ${result.eligible} eligible, and processed ${result.processed.length}.`,
+      );
+      await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function analyzeCandidate(candidate: any) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request(
+        `/api/sourcing/candidates/${encodeURIComponent(candidate.id)}/analyze`,
+        token,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      setMessage(
+        `Analyzed ${shortToken(candidate.wallet_address)}: ${formatRecommendation(result.analysis?.recommendation)} (${Math.round(result.analysis?.qualification_score ?? 0)}/100).`,
       );
       await loadSourcing();
     } catch (e) {
@@ -1004,9 +1039,50 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
                     {c.five_x_appearances} · Median rank:{" "}
                     {c.median_buyer_rank ?? "—"}
                   </p>
+                  {c.analysis && (
+                    <div className="candidateAnalysis">
+                      <span
+                        className={`badge ${recommendationClass(c.analysis.recommendation)}`}
+                      >
+                        {formatRecommendation(c.analysis.recommendation)} ·{" "}
+                        {Math.round(c.analysis.qualification_score)}/100
+                      </span>
+                      <p>
+                        Swaps: {c.analysis.total_swaps} · Buys:{" "}
+                        {c.analysis.buy_count} · Sells: {c.analysis.sell_count}{" "}
+                        · Tokens: {c.analysis.distinct_tokens}
+                      </p>
+                      <p>
+                        Trades/day:{" "}
+                        {c.analysis.trades_per_day == null
+                          ? "—"
+                          : Number(c.analysis.trades_per_day).toFixed(1)}
+                        {" · "}
+                        Hold:{" "}
+                        {c.analysis.median_hold_minutes == null
+                          ? "—"
+                          : `${Math.round(c.analysis.median_hold_minutes)}m`}
+                      </p>
+                      {!!c.analysis.warnings?.length && (
+                        <small>Warnings: {c.analysis.warnings.join("; ")}</small>
+                      )}
+                      {!!c.analysis.strengths?.length && (
+                        <small>
+                          Strengths: {c.analysis.strengths.join("; ")}
+                        </small>
+                      )}
+                    </div>
+                  )}
                   <small>
                     {(c.source_types ?? []).join(", ") || "No sources yet"}
                   </small>
+                  <button
+                    className="miniButton"
+                    disabled={busy}
+                    onClick={() => analyzeCandidate(c)}
+                  >
+                    {c.analysis ? "Re-analyze" : "Analyze"}
+                  </button>
                 </article>
               ))}
               {!sourcing?.candidates?.length && (

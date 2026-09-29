@@ -256,6 +256,30 @@ export class Database {
         median_entry_delay_seconds NUMERIC,
         last_calculated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+
+      CREATE TABLE IF NOT EXISTS wallet_candidate_analyses (
+        candidate_id TEXT PRIMARY KEY REFERENCES wallet_candidates(id) ON DELETE CASCADE,
+        analyzed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        recommendation TEXT NOT NULL,
+        qualification_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+        total_swaps INTEGER NOT NULL DEFAULT 0,
+        buy_count INTEGER NOT NULL DEFAULT 0,
+        sell_count INTEGER NOT NULL DEFAULT 0,
+        distinct_tokens INTEGER NOT NULL DEFAULT 0,
+        winning_token_hits INTEGER NOT NULL DEFAULT 0,
+        five_x_hits INTEGER NOT NULL DEFAULT 0,
+        recent_non_winning_buys INTEGER NOT NULL DEFAULT 0,
+        trades_per_day DOUBLE PRECISION,
+        median_hold_minutes DOUBLE PRECISION,
+        sell_coverage_pct DOUBLE PRECISION,
+        possible_bot BOOLEAN NOT NULL DEFAULT false,
+        possible_router BOOLEAN NOT NULL DEFAULT false,
+        possible_deployer BOOLEAN NOT NULL DEFAULT false,
+        uses_multiple_fee_payers BOOLEAN NOT NULL DEFAULT false,
+        warnings TEXT[] NOT NULL DEFAULT '{}',
+        strengths TEXT[] NOT NULL DEFAULT '{}',
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+      );
     `);
     await this.pool.query(
       `ALTER TABLE copy_configs ALTER COLUMN mirror_exits SET DEFAULT true`,
@@ -1259,6 +1283,93 @@ export class Database {
     );
   }
 
+  async getWalletCandidate(candidateId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM wallet_candidates WHERE id=$1 LIMIT 1`,
+      [candidateId],
+    );
+    return rows[0] ?? null;
+  }
+
+  async upsertWalletCandidateAnalysis(input: {
+    candidateId: string;
+    recommendation: string;
+    qualificationScore: number;
+    totalSwaps: number;
+    buyCount: number;
+    sellCount: number;
+    distinctTokens: number;
+    winningTokenHits: number;
+    fiveXHits: number;
+    recentNonWinningBuys: number;
+    tradesPerDay?: number | null;
+    medianHoldMinutes?: number | null;
+    sellCoveragePct?: number | null;
+    possibleBot: boolean;
+    possibleRouter: boolean;
+    possibleDeployer: boolean;
+    usesMultipleFeePayers: boolean;
+    warnings: string[];
+    strengths: string[];
+    metadata?: Record<string, unknown>;
+  }) {
+    const { rows } = await this.pool.query(
+      `
+      INSERT INTO wallet_candidate_analyses(candidate_id,analyzed_at,recommendation,qualification_score,total_swaps,buy_count,sell_count,distinct_tokens,winning_token_hits,five_x_hits,recent_non_winning_buys,trades_per_day,median_hold_minutes,sell_coverage_pct,possible_bot,possible_router,possible_deployer,uses_multiple_fee_payers,warnings,strengths,metadata)
+      VALUES($1,now(),$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
+      ON CONFLICT(candidate_id) DO UPDATE SET
+        analyzed_at=now(),
+        recommendation=EXCLUDED.recommendation,
+        qualification_score=EXCLUDED.qualification_score,
+        total_swaps=EXCLUDED.total_swaps,
+        buy_count=EXCLUDED.buy_count,
+        sell_count=EXCLUDED.sell_count,
+        distinct_tokens=EXCLUDED.distinct_tokens,
+        winning_token_hits=EXCLUDED.winning_token_hits,
+        five_x_hits=EXCLUDED.five_x_hits,
+        recent_non_winning_buys=EXCLUDED.recent_non_winning_buys,
+        trades_per_day=EXCLUDED.trades_per_day,
+        median_hold_minutes=EXCLUDED.median_hold_minutes,
+        sell_coverage_pct=EXCLUDED.sell_coverage_pct,
+        possible_bot=EXCLUDED.possible_bot,
+        possible_router=EXCLUDED.possible_router,
+        possible_deployer=EXCLUDED.possible_deployer,
+        uses_multiple_fee_payers=EXCLUDED.uses_multiple_fee_payers,
+        warnings=EXCLUDED.warnings,
+        strengths=EXCLUDED.strengths,
+        metadata=EXCLUDED.metadata
+      RETURNING *
+    `,
+      [
+        input.candidateId,
+        input.recommendation,
+        input.qualificationScore,
+        input.totalSwaps,
+        input.buyCount,
+        input.sellCount,
+        input.distinctTokens,
+        input.winningTokenHits,
+        input.fiveXHits,
+        input.recentNonWinningBuys,
+        input.tradesPerDay ?? null,
+        input.medianHoldMinutes ?? null,
+        input.sellCoveragePct ?? null,
+        input.possibleBot,
+        input.possibleRouter,
+        input.possibleDeployer,
+        input.usesMultipleFeePayers,
+        input.warnings,
+        input.strengths,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    await this.pool.query(
+      `UPDATE wallet_candidates SET analysis_status=$2,updated_at=now() WHERE id=$1`,
+      [input.candidateId, input.recommendation],
+    );
+    return rows[0];
+  }
+
   async recalculateWalletSourceStats() {
     await this.pool.query(`
       INSERT INTO wallet_source_stats(candidate_id,winning_token_appearances,two_x_appearances,five_x_appearances,ten_x_appearances,leader_neighbor_appearances,convergence_appearances,social_identity_sources,leaderboard_sources,unique_source_types,unique_tokens,median_buyer_rank,median_entry_delay_seconds,last_calculated_at)
@@ -1316,11 +1427,19 @@ export class Database {
       `
       SELECT c.*, st.winning_token_appearances,st.two_x_appearances,st.five_x_appearances,st.ten_x_appearances,
              st.unique_source_types,st.unique_tokens,st.median_buyer_rank,st.median_entry_delay_seconds,
-             COALESCE(array_agg(DISTINCT s.source_type) FILTER (WHERE s.id IS NOT NULL),'{}') AS source_types
+             a.analyzed_at,a.recommendation,a.qualification_score,a.total_swaps,a.buy_count,a.sell_count,
+             a.distinct_tokens,a.winning_token_hits,a.five_x_hits,a.recent_non_winning_buys,
+             a.trades_per_day,a.median_hold_minutes,a.sell_coverage_pct,a.possible_bot,a.possible_router,
+             a.possible_deployer,a.uses_multiple_fee_payers,a.warnings,a.strengths,a.metadata AS analysis_metadata,
+             COALESCE(src.source_types,'{}') AS source_types
       FROM wallet_candidates c
       LEFT JOIN wallet_source_stats st ON st.candidate_id=c.id
-      LEFT JOIN wallet_candidate_sources s ON s.candidate_id=c.id
-      GROUP BY c.id,st.candidate_id
+      LEFT JOIN wallet_candidate_analyses a ON a.candidate_id=c.id
+      LEFT JOIN LATERAL (
+        SELECT array_agg(DISTINCT source_type) AS source_types
+        FROM wallet_candidate_sources
+        WHERE candidate_id=c.id
+      ) src ON true
       ORDER BY c.source_priority DESC,c.last_discovered_at DESC
       LIMIT $1
     `,
@@ -1352,6 +1471,14 @@ export class Database {
       [candidateId],
     );
     return rows;
+  }
+
+  async candidateAnalysis(candidateId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM wallet_candidate_analyses WHERE candidate_id=$1 LIMIT 1`,
+      [candidateId],
+    );
+    return rows[0] ?? null;
   }
 
   async sourcingStats() {
