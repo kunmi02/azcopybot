@@ -1422,7 +1422,11 @@ export class Database {
     `);
   }
 
-  async listWalletCandidates(limit = 50) {
+  async listWalletCandidates(limit = 50, order: "priority" | "recent" = "priority") {
+    const orderSql =
+      order === "recent"
+        ? "c.last_discovered_at DESC,c.created_at DESC"
+        : "c.source_priority DESC,c.last_discovered_at DESC";
     const { rows } = await this.pool.query(
       `
       SELECT c.*, st.winning_token_appearances,st.two_x_appearances,st.five_x_appearances,st.ten_x_appearances,
@@ -1440,7 +1444,7 @@ export class Database {
         FROM wallet_candidate_sources
         WHERE candidate_id=c.id
       ) src ON true
-      ORDER BY c.source_priority DESC,c.last_discovered_at DESC
+      ORDER BY ${orderSql}
       LIMIT $1
     `,
       [limit],

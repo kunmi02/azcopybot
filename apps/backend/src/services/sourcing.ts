@@ -180,13 +180,13 @@ export class SourcingService {
   }
 
   async feed() {
-    const [candidates, winningTokens, stats] = await Promise.all([
-      this.db.listWalletCandidates(50),
+    const [recentCandidates, winningTokens, stats] = await Promise.all([
+      this.db.listWalletCandidates(10, "recent"),
       this.db.listWinningTokens(30),
       this.db.sourcingStats(),
     ]);
     return {
-      candidates: candidates.map(publicCandidate),
+      candidates: recentCandidates.map(publicCandidate),
       winningTokens: winningTokens.map(publicWinningToken),
       stats: publicSourcingStats(stats),
     };
@@ -220,6 +220,46 @@ export class SourcingService {
     });
     return { ok: true, analysis: publicAnalysis(saved) };
   }
+
+  async bestCandidates(limit = 5) {
+    const candidates = await this.db.listWalletCandidates(25, "priority");
+    const analyzed: any[] = [];
+    for (const candidate of candidates) {
+      if (
+        !candidate.recommendation &&
+        analyzed.length < 10 &&
+        Number(candidate.source_priority ?? 0) >= 40
+      ) {
+        try {
+          await this.analyzeCandidate(candidate.id);
+        } catch {
+          // Keep ranking from existing evidence if a provider call fails.
+        }
+      }
+      analyzed.push(candidate);
+    }
+    const refreshed = await this.db.listWalletCandidates(25, "priority");
+    const best = refreshed
+      .map(publicCandidate)
+      .filter((candidate: any) => {
+        const recommendation = candidate.analysis?.recommendation;
+        return recommendation !== "REJECT_BOT_OR_ROUTER_RISK";
+      })
+      .sort((a: any, b: any) => bestScore(b) - bestScore(a))
+      .slice(0, limit);
+    return { wallets: best };
+  }
+}
+
+function bestScore(candidate: any) {
+  const analysis = candidate.analysis;
+  return (
+    Number(analysis?.qualification_score ?? 0) * 1.5 +
+    Number(candidate.source_priority ?? 0) +
+    Number(candidate.winning_token_appearances ?? 0) * 12 +
+    Number(candidate.five_x_appearances ?? 0) * 8 -
+    (analysis?.recommendation === "WATCH_MORE" ? 15 : 0)
+  );
 }
 
 function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwap[]) {

@@ -144,6 +144,7 @@ export default function Home() {
     winningTokens: any[];
     stats?: any;
   } | null>(null);
+  const [bestWallets, setBestWallets] = useState<any[] | null>(null);
   const [discoveryMint, setDiscoveryMint] = useState("");
   const [discoveryPeak, setDiscoveryPeak] = useState("5");
 
@@ -303,6 +304,24 @@ export default function Home() {
       setMessage(
         `Analyzed ${shortToken(candidate.wallet_address)}: ${formatRecommendation(result.analysis?.recommendation)} (${Math.round(result.analysis?.qualification_score ?? 0)}/100).`,
       );
+      await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadBestWallets() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request("/api/sourcing/candidates/best", token, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setBestWallets(result.wallets ?? []);
+      setMessage(`Selected ${result.wallets?.length ?? 0} best candidate wallets.`);
       await loadSourcing();
     } catch (e) {
       setMessage(String(e));
@@ -993,6 +1012,9 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
           <button disabled={busy} onClick={scanDiscovery}>
             Scan now
           </button>
+          <button className="secondary" disabled={busy} onClick={loadBestWallets}>
+            Show best 5 wallets
+          </button>
         </div>
         <form onSubmit={discoverToken} className="inlineForm discoveryForm">
           <input
@@ -1019,72 +1041,47 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
           Both paths are read-only: they store candidate wallets and evidence,
           but never follow or trade automatically.
         </p>
+        {bestWallets && (
+          <div className="candidateBest">
+            <div className="leaderPanelHead">
+              <b>Best 5 wallets to paper-follow</b>
+              <span>{bestWallets.length}</span>
+            </div>
+            <div className="candidateList">
+              {bestWallets.map((c) => (
+                <CandidateCard
+                  key={c.id}
+                  candidate={c}
+                  busy={busy}
+                  onAnalyze={analyzeCandidate}
+                />
+              ))}
+              {!bestWallets.length && (
+                <p className="muted">
+                  No wallet is qualified yet. Let sourcing run longer or analyze
+                  more candidates.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
         <div className="discoveryGrid">
           <div>
             <div className="leaderPanelHead">
-              <b>Top candidates</b>
+              <b>Recent candidate wallets</b>
               <span>{sourcing?.candidates?.length ?? 0}</span>
             </div>
             <div className="candidateList">
-              {sourcing?.candidates?.slice(0, 8).map((c) => (
-                <article className="candidateCard" key={c.id}>
-                  <div>
-                    <b className="mono">{shortToken(c.wallet_address)}</b>
-                    <span className="badge paper">
-                      Priority {Number(c.source_priority).toFixed(0)}
-                    </span>
-                  </div>
-                  <p>
-                    Winning tokens: {c.winning_token_appearances} · 5x+:{" "}
-                    {c.five_x_appearances} · Median rank:{" "}
-                    {c.median_buyer_rank ?? "—"}
-                  </p>
-                  {c.analysis && (
-                    <div className="candidateAnalysis">
-                      <span
-                        className={`badge ${recommendationClass(c.analysis.recommendation)}`}
-                      >
-                        {formatRecommendation(c.analysis.recommendation)} ·{" "}
-                        {Math.round(c.analysis.qualification_score)}/100
-                      </span>
-                      <p>
-                        Swaps: {c.analysis.total_swaps} · Buys:{" "}
-                        {c.analysis.buy_count} · Sells: {c.analysis.sell_count}{" "}
-                        · Tokens: {c.analysis.distinct_tokens}
-                      </p>
-                      <p>
-                        Trades/day:{" "}
-                        {c.analysis.trades_per_day == null
-                          ? "—"
-                          : Number(c.analysis.trades_per_day).toFixed(1)}
-                        {" · "}
-                        Hold:{" "}
-                        {c.analysis.median_hold_minutes == null
-                          ? "—"
-                          : `${Math.round(c.analysis.median_hold_minutes)}m`}
-                      </p>
-                      {!!c.analysis.warnings?.length && (
-                        <small>Warnings: {c.analysis.warnings.join("; ")}</small>
-                      )}
-                      {!!c.analysis.strengths?.length && (
-                        <small>
-                          Strengths: {c.analysis.strengths.join("; ")}
-                        </small>
-                      )}
-                    </div>
-                  )}
-                  <small>
-                    {(c.source_types ?? []).join(", ") || "No sources yet"}
-                  </small>
-                  <button
-                    className="miniButton"
-                    disabled={busy}
-                    onClick={() => analyzeCandidate(c)}
-                  >
-                    {c.analysis ? "Re-analyze" : "Analyze"}
-                  </button>
-                </article>
-              ))}
+              {sourcing?.candidates
+                ?.slice(0, 10)
+                .map((c) => (
+                  <CandidateCard
+                    key={c.id}
+                    candidate={c}
+                    busy={busy}
+                    onAnalyze={analyzeCandidate}
+                  />
+                ))}
               {!sourcing?.candidates?.length && (
                 <p className="muted">
                   No candidates yet. Discover a winning token to extract early
@@ -1632,6 +1629,74 @@ function LeaderCard({
           </div>
         </LeaderPanel>
       </div>
+    </article>
+  );
+}
+
+function CandidateCard({
+  candidate,
+  busy,
+  onAnalyze,
+}: {
+  candidate: any;
+  busy: boolean;
+  onAnalyze: (candidate: any) => void;
+}) {
+  const analysis = candidate.analysis;
+  return (
+    <article className="candidateCard">
+      <div>
+        <b className="mono">{shortToken(candidate.wallet_address)}</b>
+        <span className="badge paper">
+          Priority {Number(candidate.source_priority).toFixed(0)}
+        </span>
+      </div>
+      <p>
+        Winning tokens: {candidate.winning_token_appearances} · 5x+:{" "}
+        {candidate.five_x_appearances} · Median rank:{" "}
+        {candidate.median_buyer_rank ?? "—"}
+      </p>
+      {analysis && (
+        <div className="candidateAnalysis">
+          <span
+            className={`badge ${recommendationClass(analysis.recommendation)}`}
+          >
+            {formatRecommendation(analysis.recommendation)} ·{" "}
+            {Math.round(analysis.qualification_score)}/100
+          </span>
+          <p>
+            Swaps: {analysis.total_swaps} · Buys: {analysis.buy_count} · Sells:{" "}
+            {analysis.sell_count} · Tokens: {analysis.distinct_tokens}
+          </p>
+          <p>
+            Trades/day:{" "}
+            {analysis.trades_per_day == null
+              ? "—"
+              : Number(analysis.trades_per_day).toFixed(1)}
+            {" · "}
+            Hold:{" "}
+            {analysis.median_hold_minutes == null
+              ? "—"
+              : `${Math.round(analysis.median_hold_minutes)}m`}
+          </p>
+          {!!analysis.warnings?.length && (
+            <small>Warnings: {analysis.warnings.join("; ")}</small>
+          )}
+          {!!analysis.strengths?.length && (
+            <small>Strengths: {analysis.strengths.join("; ")}</small>
+          )}
+        </div>
+      )}
+      <small>
+        {(candidate.source_types ?? []).join(", ") || "No sources yet"}
+      </small>
+      <button
+        className="miniButton"
+        disabled={busy}
+        onClick={() => onAnalyze(candidate)}
+      >
+        {analysis ? "Re-analyze" : "Analyze"}
+      </button>
     </article>
   );
 }

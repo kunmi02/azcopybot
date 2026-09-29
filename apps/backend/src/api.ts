@@ -203,6 +203,11 @@ export async function buildApi(
     return sourcing.feed();
   });
 
+  app.post("/api/sourcing/candidates/best", async (req) => {
+    await requireUser(req, db);
+    return sourcing.bestCandidates(5);
+  });
+
   app.get("/api/sourcing/candidates/:id", async (req) => {
     await requireUser(req, db);
     return sourcing.candidateDetail((req.params as any).id as string);
