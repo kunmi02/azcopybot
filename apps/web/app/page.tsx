@@ -124,6 +124,13 @@ export default function Home() {
   >("connecting");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [activityRefreshing, setActivityRefreshing] = useState(false);
+  const [sourcing, setSourcing] = useState<{
+    candidates: any[];
+    winningTokens: any[];
+    stats?: any;
+  } | null>(null);
+  const [discoveryMint, setDiscoveryMint] = useState("");
+  const [discoveryPeak, setDiscoveryPeak] = useState("5");
 
   useEffect(() => {
     async function restoreSession() {
@@ -145,6 +152,7 @@ export default function Home() {
     if (token) {
       void load();
       void loadHealth();
+      void loadSourcing();
     }
   }, [token]);
   useEffect(() => {
@@ -208,6 +216,63 @@ export default function Home() {
       setFeedStatus("disconnected");
     } finally {
       if (options?.manual) setActivityRefreshing(false);
+    }
+  }
+
+  async function loadSourcing() {
+    try {
+      setSourcing(await request("/api/sourcing/feed", token));
+    } catch {
+      // Discovery is optional and should not block trading control.
+    }
+  }
+
+  async function discoverToken(e: FormEvent) {
+    e.preventDefault();
+    if (!discoveryMint.trim()) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request(
+        `/api/sourcing/tokens/${encodeURIComponent(discoveryMint.trim())}/discover`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            peakMultiple: discoveryPeak ? Number(discoveryPeak) : null,
+            maxBuyers: 100,
+            minTradeUsd: 10,
+          }),
+        },
+      );
+      setMessage(
+        `Discovery scanned ${result.buyersFound} early buyers and stored ${result.candidatesStored} candidates.`,
+      );
+      setDiscoveryMint("");
+      await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function scanDiscovery() {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request("/api/sourcing/scan", token, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setMessage(
+        `Auto scan checked ${result.scanned} tokens, found ${result.eligible} eligible, and processed ${result.processed.length}.`,
+      );
+      await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -870,6 +935,118 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               Follow wallet
             </button>
           </form>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="sectionTitle">
+          <h2>Trader Discovery</h2>
+          <span>
+            {sourcing?.stats
+              ? `${sourcing.stats.candidate_count} candidates · ${sourcing.stats.processed_token_count} tokens processed`
+              : "automated early-buyer sourcing"}
+          </span>
+        </div>
+        <div className="leaderPanelHead">
+          <div>
+            <b>Automatic scanner</b>
+            <p className="muted compactText">
+              Scans DexScreener Solana profiles/boosts, filters for liquidity,
+              volume, transactions and momentum, then extracts early buyers.
+            </p>
+          </div>
+          <button disabled={busy} onClick={scanDiscovery}>
+            Scan now
+          </button>
+        </div>
+        <form onSubmit={discoverToken} className="inlineForm discoveryForm">
+          <input
+            className="mono"
+            placeholder="Winning token mint"
+            value={discoveryMint}
+            onChange={(e) => setDiscoveryMint(e.target.value)}
+          />
+          <input
+            type="number"
+            min="1"
+            step="0.5"
+            title="Peak multiple"
+            value={discoveryPeak}
+            onChange={(e) => setDiscoveryPeak(e.target.value)}
+          />
+          <button disabled={busy || !discoveryMint.trim()}>
+            Discover early buyers
+          </button>
+        </form>
+        <p className="muted">
+          Manual token input is still available for tokens you already know.
+          The automatic scanner runs in the backend when Helius is configured.
+          Both paths are read-only: they store candidate wallets and evidence,
+          but never follow or trade automatically.
+        </p>
+        <div className="discoveryGrid">
+          <div>
+            <div className="leaderPanelHead">
+              <b>Top candidates</b>
+              <span>{sourcing?.candidates?.length ?? 0}</span>
+            </div>
+            <div className="candidateList">
+              {sourcing?.candidates?.slice(0, 8).map((c) => (
+                <article className="candidateCard" key={c.id}>
+                  <div>
+                    <b className="mono">{shortToken(c.wallet_address)}</b>
+                    <span className="badge paper">
+                      Priority {Number(c.source_priority).toFixed(0)}
+                    </span>
+                  </div>
+                  <p>
+                    Winning tokens: {c.winning_token_appearances} · 5x+:{" "}
+                    {c.five_x_appearances} · Median rank:{" "}
+                    {c.median_buyer_rank ?? "—"}
+                  </p>
+                  <small>
+                    {(c.source_types ?? []).join(", ") || "No sources yet"}
+                  </small>
+                </article>
+              ))}
+              {!sourcing?.candidates?.length && (
+                <p className="muted">
+                  No candidates yet. Discover a winning token to extract early
+                  buyers.
+                </p>
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="leaderPanelHead">
+              <b>Winning tokens</b>
+              <span>{sourcing?.winningTokens?.length ?? 0}</span>
+            </div>
+            <div className="candidateList">
+              {sourcing?.winningTokens?.slice(0, 8).map((t) => (
+                <article className="candidateCard" key={t.id}>
+                  <div>
+                    <b>{t.metadata?.symbol ?? shortToken(t.token_mint)}</b>
+                    <span>
+                      {t.peak_multiple
+                        ? `${Number(t.peak_multiple).toFixed(1)}x`
+                        : "manual"}
+                    </span>
+                  </div>
+                  <p>
+                    Early buyers: {t.early_buyer_count} · Liquidity:{" "}
+                    {t.liquidity_usd == null
+                      ? "—"
+                      : `$${Number(t.liquidity_usd).toLocaleString()}`}
+                  </p>
+                  <small className="mono">{shortToken(t.token_mint)}</small>
+                </article>
+              ))}
+              {!sourcing?.winningTokens?.length && (
+                <p className="muted">No winning tokens scanned yet.</p>
+              )}
+            </div>
+          </div>
         </div>
       </section>
 

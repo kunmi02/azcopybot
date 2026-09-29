@@ -172,6 +172,90 @@ export class Database {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS activity_events_user_created_idx ON activity_events(user_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS wallet_candidates (
+        id TEXT PRIMARY KEY,
+        chain TEXT NOT NULL,
+        wallet_address TEXT NOT NULL,
+        display_name TEXT,
+        source_priority DOUBLE PRECISION NOT NULL DEFAULT 0,
+        source_count INTEGER NOT NULL DEFAULT 0,
+        first_discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_discovered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        analysis_status TEXT NOT NULL DEFAULT 'PENDING',
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(chain,wallet_address)
+      );
+
+      CREATE TABLE IF NOT EXISTS wallet_candidate_sources (
+        id TEXT PRIMARY KEY,
+        candidate_id TEXT NOT NULL REFERENCES wallet_candidates(id) ON DELETE CASCADE,
+        source_type TEXT NOT NULL,
+        source_provider TEXT,
+        source_entity TEXT,
+        source_event_id TEXT NOT NULL,
+        token_mint TEXT,
+        leader_wallet TEXT,
+        observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(candidate_id,source_type,source_event_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS winning_tokens (
+        id TEXT PRIMARY KEY,
+        chain TEXT NOT NULL,
+        token_mint TEXT NOT NULL,
+        detected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        baseline_time TIMESTAMPTZ,
+        baseline_price_usd NUMERIC,
+        peak_time TIMESTAMPTZ,
+        peak_price_usd NUMERIC,
+        peak_multiple NUMERIC,
+        liquidity_usd NUMERIC,
+        market_cap_usd NUMERIC,
+        discovery_reason TEXT NOT NULL,
+        source_provider TEXT,
+        processed_for_wallets BOOLEAN NOT NULL DEFAULT false,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(chain,token_mint)
+      );
+
+      CREATE TABLE IF NOT EXISTS token_early_buyers (
+        id TEXT PRIMARY KEY,
+        winning_token_id TEXT NOT NULL REFERENCES winning_tokens(id) ON DELETE CASCADE,
+        wallet_address TEXT NOT NULL,
+        buyer_rank INTEGER,
+        buy_time TIMESTAMPTZ NOT NULL,
+        buy_amount_usd NUMERIC,
+        seconds_from_baseline BIGINT,
+        price_at_buy_usd NUMERIC,
+        meaningful BOOLEAN NOT NULL DEFAULT true,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(winning_token_id,wallet_address)
+      );
+
+      CREATE TABLE IF NOT EXISTS wallet_source_stats (
+        candidate_id TEXT PRIMARY KEY REFERENCES wallet_candidates(id) ON DELETE CASCADE,
+        winning_token_appearances INTEGER NOT NULL DEFAULT 0,
+        two_x_appearances INTEGER NOT NULL DEFAULT 0,
+        five_x_appearances INTEGER NOT NULL DEFAULT 0,
+        ten_x_appearances INTEGER NOT NULL DEFAULT 0,
+        leader_neighbor_appearances INTEGER NOT NULL DEFAULT 0,
+        convergence_appearances INTEGER NOT NULL DEFAULT 0,
+        social_identity_sources INTEGER NOT NULL DEFAULT 0,
+        leaderboard_sources INTEGER NOT NULL DEFAULT 0,
+        unique_source_types INTEGER NOT NULL DEFAULT 0,
+        unique_tokens INTEGER NOT NULL DEFAULT 0,
+        median_buyer_rank NUMERIC,
+        median_entry_delay_seconds NUMERIC,
+        last_calculated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `);
     await this.pool.query(
       `ALTER TABLE copy_configs ALTER COLUMN mirror_exits SET DEFAULT true`,
@@ -573,9 +657,7 @@ export class Database {
     return rows.map((r) => r.address as string);
   }
 
-  async configsForWallet(
-    address: string,
-  ): Promise<
+  async configsForWallet(address: string): Promise<
     Array<
       CopyConfig & {
         chatId: string;
@@ -1019,6 +1101,269 @@ export class Database {
       [userId, limit],
     );
     return rows;
+  }
+
+  async upsertWinningToken(input: {
+    chain: string;
+    tokenMint: string;
+    baselinePriceUsd?: number | null;
+    peakPriceUsd?: number | null;
+    peakMultiple?: number | null;
+    liquidityUsd?: number | null;
+    marketCapUsd?: number | null;
+    discoveryReason: string;
+    sourceProvider?: string | null;
+    metadata?: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    const { rows } = await this.pool.query(
+      `
+      INSERT INTO winning_tokens(id,chain,token_mint,detected_at,baseline_price_usd,peak_price_usd,peak_multiple,liquidity_usd,market_cap_usd,discovery_reason,source_provider,metadata,created_at,updated_at)
+      VALUES($1,$2,$3,now(),$4,$5,$6,$7,$8,$9,$10,$11::jsonb,now(),now())
+      ON CONFLICT(chain,token_mint) DO UPDATE SET
+        peak_price_usd=COALESCE(EXCLUDED.peak_price_usd,winning_tokens.peak_price_usd),
+        peak_multiple=COALESCE(EXCLUDED.peak_multiple,winning_tokens.peak_multiple),
+        liquidity_usd=COALESCE(EXCLUDED.liquidity_usd,winning_tokens.liquidity_usd),
+        market_cap_usd=COALESCE(EXCLUDED.market_cap_usd,winning_tokens.market_cap_usd),
+        metadata=winning_tokens.metadata || EXCLUDED.metadata,
+        updated_at=now()
+      RETURNING *
+    `,
+      [
+        id,
+        input.chain,
+        input.tokenMint,
+        input.baselinePriceUsd ?? null,
+        input.peakPriceUsd ?? null,
+        input.peakMultiple ?? null,
+        input.liquidityUsd ?? null,
+        input.marketCapUsd ?? null,
+        input.discoveryReason,
+        input.sourceProvider ?? null,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    return rows[0];
+  }
+
+  async getWinningTokenByMint(chain: string, tokenMint: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM winning_tokens WHERE chain=$1 AND token_mint=$2 LIMIT 1`,
+      [chain, tokenMint],
+    );
+    return rows[0] ?? null;
+  }
+
+  async markWinningTokenProcessed(id: string) {
+    await this.pool.query(
+      `UPDATE winning_tokens SET processed_for_wallets=true,updated_at=now() WHERE id=$1`,
+      [id],
+    );
+  }
+
+  async upsertWalletCandidate(input: {
+    chain: string;
+    walletAddress: string;
+    displayName?: string | null;
+    metadata?: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    const { rows } = await this.pool.query(
+      `
+      INSERT INTO wallet_candidates(id,chain,wallet_address,display_name,first_discovered_at,last_discovered_at,metadata,created_at,updated_at)
+      VALUES($1,$2,$3,$4,now(),now(),$5::jsonb,now(),now())
+      ON CONFLICT(chain,wallet_address) DO UPDATE SET
+        display_name=COALESCE(EXCLUDED.display_name,wallet_candidates.display_name),
+        last_discovered_at=now(),
+        metadata=wallet_candidates.metadata || EXCLUDED.metadata,
+        updated_at=now()
+      RETURNING *
+    `,
+      [
+        id,
+        input.chain,
+        input.walletAddress,
+        input.displayName ?? null,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    return rows[0];
+  }
+
+  async addWalletCandidateSource(input: {
+    candidateId: string;
+    sourceType: string;
+    sourceProvider?: string | null;
+    sourceEntity?: string | null;
+    sourceEventId: string;
+    tokenMint?: string | null;
+    leaderWallet?: string | null;
+    observedAt?: Date;
+    metadata?: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    await this.pool.query(
+      `
+      INSERT INTO wallet_candidate_sources(id,candidate_id,source_type,source_provider,source_entity,source_event_id,token_mint,leader_wallet,observed_at,metadata,created_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,now())
+      ON CONFLICT(candidate_id,source_type,source_event_id) DO NOTHING
+    `,
+      [
+        id,
+        input.candidateId,
+        input.sourceType,
+        input.sourceProvider ?? null,
+        input.sourceEntity ?? null,
+        input.sourceEventId,
+        input.tokenMint ?? null,
+        input.leaderWallet ?? null,
+        input.observedAt ?? new Date(),
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+  }
+
+  async addTokenEarlyBuyer(input: {
+    winningTokenId: string;
+    walletAddress: string;
+    buyerRank?: number | null;
+    buyTime: Date;
+    buyAmountUsd?: number | null;
+    secondsFromBaseline?: number | null;
+    priceAtBuyUsd?: number | null;
+    meaningful?: boolean;
+    metadata?: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    await this.pool.query(
+      `
+      INSERT INTO token_early_buyers(id,winning_token_id,wallet_address,buyer_rank,buy_time,buy_amount_usd,seconds_from_baseline,price_at_buy_usd,meaningful,metadata,created_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,now())
+      ON CONFLICT(winning_token_id,wallet_address) DO UPDATE SET
+        buyer_rank=LEAST(COALESCE(token_early_buyers.buyer_rank,EXCLUDED.buyer_rank),COALESCE(EXCLUDED.buyer_rank,token_early_buyers.buyer_rank)),
+        buy_amount_usd=COALESCE(token_early_buyers.buy_amount_usd,EXCLUDED.buy_amount_usd),
+        metadata=token_early_buyers.metadata || EXCLUDED.metadata
+    `,
+      [
+        id,
+        input.winningTokenId,
+        input.walletAddress,
+        input.buyerRank ?? null,
+        input.buyTime,
+        input.buyAmountUsd ?? null,
+        input.secondsFromBaseline ?? null,
+        input.priceAtBuyUsd ?? null,
+        input.meaningful ?? true,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+  }
+
+  async recalculateWalletSourceStats() {
+    await this.pool.query(`
+      INSERT INTO wallet_source_stats(candidate_id,winning_token_appearances,two_x_appearances,five_x_appearances,ten_x_appearances,leader_neighbor_appearances,convergence_appearances,social_identity_sources,leaderboard_sources,unique_source_types,unique_tokens,median_buyer_rank,median_entry_delay_seconds,last_calculated_at)
+      SELECT c.id,
+        COUNT(DISTINCT s.token_mint) FILTER (WHERE s.source_type IN ('WINNING_TOKEN_EARLY_BUYER','REPEAT_WINNING_TOKEN_BUYER'))::int,
+        COUNT(DISTINCT s.token_mint) FILTER (WHERE (s.metadata->>'tokenPeakMultiple')::numeric >= 2)::int,
+        COUNT(DISTINCT s.token_mint) FILTER (WHERE (s.metadata->>'tokenPeakMultiple')::numeric >= 5)::int,
+        COUNT(DISTINCT s.token_mint) FILTER (WHERE (s.metadata->>'tokenPeakMultiple')::numeric >= 10)::int,
+        COUNT(*) FILTER (WHERE s.source_type LIKE 'LEADER_%')::int,
+        COUNT(*) FILTER (WHERE s.source_type='CONVERGENCE_CLUSTER')::int,
+        COUNT(*) FILTER (WHERE s.source_type IN ('FOMOSCAN_IDENTITY','SOCIAL_HANDLE'))::int,
+        COUNT(*) FILTER (WHERE s.source_type='PUBLIC_LEADERBOARD')::int,
+        COUNT(DISTINCT s.source_type)::int,
+        COUNT(DISTINCT s.token_mint)::int,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY NULLIF(s.metadata->>'buyerRank','')::numeric) FILTER (WHERE s.metadata ? 'buyerRank'),
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY NULLIF(s.metadata->>'entryDelaySeconds','')::numeric) FILTER (WHERE s.metadata ? 'entryDelaySeconds'),
+        now()
+      FROM wallet_candidates c
+      LEFT JOIN wallet_candidate_sources s ON s.candidate_id=c.id
+      GROUP BY c.id
+      ON CONFLICT(candidate_id) DO UPDATE SET
+        winning_token_appearances=EXCLUDED.winning_token_appearances,
+        two_x_appearances=EXCLUDED.two_x_appearances,
+        five_x_appearances=EXCLUDED.five_x_appearances,
+        ten_x_appearances=EXCLUDED.ten_x_appearances,
+        leader_neighbor_appearances=EXCLUDED.leader_neighbor_appearances,
+        convergence_appearances=EXCLUDED.convergence_appearances,
+        social_identity_sources=EXCLUDED.social_identity_sources,
+        leaderboard_sources=EXCLUDED.leaderboard_sources,
+        unique_source_types=EXCLUDED.unique_source_types,
+        unique_tokens=EXCLUDED.unique_tokens,
+        median_buyer_rank=EXCLUDED.median_buyer_rank,
+        median_entry_delay_seconds=EXCLUDED.median_entry_delay_seconds,
+        last_calculated_at=now()
+    `);
+    await this.pool.query(`
+      UPDATE wallet_candidates c SET
+        source_count=COALESCE(src.source_count,0),
+        source_priority=LEAST(100,
+          COALESCE(st.winning_token_appearances,0)*14 +
+          COALESCE(st.five_x_appearances,0)*9 +
+          COALESCE(st.ten_x_appearances,0)*14 +
+          COALESCE(st.unique_source_types,0)*6 +
+          CASE WHEN st.median_buyer_rank IS NOT NULL THEN GREATEST(0, 12 - st.median_buyer_rank / 10) ELSE 0 END
+        ),
+        updated_at=now()
+      FROM wallet_source_stats st
+      LEFT JOIN (SELECT candidate_id, COUNT(*)::int source_count FROM wallet_candidate_sources GROUP BY candidate_id) src ON src.candidate_id=st.candidate_id
+      WHERE c.id=st.candidate_id
+    `);
+  }
+
+  async listWalletCandidates(limit = 50) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT c.*, st.winning_token_appearances,st.two_x_appearances,st.five_x_appearances,st.ten_x_appearances,
+             st.unique_source_types,st.unique_tokens,st.median_buyer_rank,st.median_entry_delay_seconds,
+             COALESCE(array_agg(DISTINCT s.source_type) FILTER (WHERE s.id IS NOT NULL),'{}') AS source_types
+      FROM wallet_candidates c
+      LEFT JOIN wallet_source_stats st ON st.candidate_id=c.id
+      LEFT JOIN wallet_candidate_sources s ON s.candidate_id=c.id
+      GROUP BY c.id,st.candidate_id
+      ORDER BY c.source_priority DESC,c.last_discovered_at DESC
+      LIMIT $1
+    `,
+      [limit],
+    );
+    return rows;
+  }
+
+  async listWinningTokens(limit = 30) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT wt.*, COUNT(teb.id)::int AS early_buyer_count
+      FROM winning_tokens wt
+      LEFT JOIN token_early_buyers teb ON teb.winning_token_id=wt.id
+      GROUP BY wt.id
+      ORDER BY wt.detected_at DESC
+      LIMIT $1
+    `,
+      [limit],
+    );
+    return rows;
+  }
+
+  async candidateSources(candidateId: string) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT * FROM wallet_candidate_sources WHERE candidate_id=$1 ORDER BY observed_at DESC LIMIT 100
+    `,
+      [candidateId],
+    );
+    return rows;
+  }
+
+  async sourcingStats() {
+    const { rows } = await this.pool.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM wallet_candidates) AS candidate_count,
+        (SELECT COUNT(*)::int FROM winning_tokens) AS winning_token_count,
+        (SELECT COUNT(*)::int FROM winning_tokens WHERE processed_for_wallets) AS processed_token_count,
+        (SELECT MAX(detected_at) FROM winning_tokens) AS last_token_detected_at,
+        (SELECT MAX(last_discovered_at) FROM wallet_candidates) AS last_candidate_discovered_at
+    `);
+    return rows[0];
   }
 
   async dashboard(userId: string) {

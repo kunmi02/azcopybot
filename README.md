@@ -126,6 +126,7 @@ It includes fixtures for:
 - Next.js web dashboard.
 - One-time web login codes generated from the user's personal Telegram chat.
 - Dashboard shows followed traders, open positions, execution history and copy-wallet status.
+- Read-only trader discovery from early buyers of winning tokens.
 
 ## Current V1 boundaries
 
@@ -177,6 +178,8 @@ FOMOSCAN_API_KEY=fsk_live_...
 TRITON_GRPC_ENDPOINT=https://...
 TRITON_GRPC_XTOKEN=...
 SOLANA_RPC_URL=https://...
+HELIUS_API_KEY=...                  # optional, enables Trader Discovery early-buyer sourcing
+SOURCING_AUTO_DISCOVERY_ENABLED=true
 ```
 
 If you run the backend directly on your machine while only Postgres is running in Docker, use localhost instead:
@@ -286,6 +289,36 @@ Useful commands:
 
 `/live` always presents an explicit second confirmation before the config is changed. It also refuses live mode unless a Jupiter API key is configured and the environment-held signer resolves to the exact configured copy-wallet public address.
 
+### 8. Trader Discovery / wallet sourcing
+
+The dashboard includes a **Trader Discovery** section for automated wallet sourcing:
+
+```text
+DexScreener Solana discovery -> liquidity/volume/momentum filters -> early buyers -> candidate wallets -> priority score
+```
+
+This feature is read-only. It stores candidate wallets and evidence, but it does not follow a wallet, enable live mode, or place trades automatically.
+
+To enable it, add a Helius API key:
+
+```env
+HELIUS_API_KEY=...
+HELIUS_API_BASE=https://api.helius.xyz/v0
+SOURCING_AUTO_DISCOVERY_ENABLED=true
+SOURCING_SCAN_INTERVAL_MS=600000
+SOURCING_SCAN_MAX_TOKENS=3
+SOURCING_MIN_LIQUIDITY_USD=10000
+SOURCING_MIN_VOLUME_H1_USD=5000
+SOURCING_MIN_TXNS_H1=25
+SOURCING_MIN_AGE_MINUTES=5
+SOURCING_MAX_AGE_HOURS=48
+SOURCING_MIN_PEAK_MULTIPLE=2
+```
+
+Then restart the backend so the sourcing tables are migrated. The backend will scan automatically after startup and then on the configured interval. The web UI also has **Scan now** for immediate runs.
+
+Manual token input remains available for tokens you already know. Candidates are ranked higher when they appear early across multiple winning tokens.
+
 ## FomoScan credit usage
 
 FomoScan is used for identity resolution, not trade streaming:
@@ -325,12 +358,10 @@ The pure detection fixtures should be expanded with **recorded real transactions
 
 ## Validation already performed on this snapshot
 
-- All TypeScript/TSX source files pass a syntax transpilation check.
-- The pure detection suite passes all 4 included fixtures: normal buy, free airdrop, rent-funded distribution, and relay-style receive.
+- `npm run typecheck` passes for backend and web.
+- `npm test` passes the pure detection fixtures: normal buy, free airdrop, rent-funded distribution, relay-style receive, partial sell, and full sell.
 - A static audit confirms that the only Solana `sendTransaction` call is in `src/execution/submit.ts`.
 - A static audit confirms signing-key environment access is isolated to `src/wallet.ts`.
-
-A full dependency-backed `npm install && npm run typecheck` could not be completed in the generation environment because package installation timed out. Run those commands in CI or locally before deployment; do not enable LIVE mode until they pass and the real Yellowstone payload has been validated.
 
 ## Next implementation milestones
 

@@ -18,6 +18,7 @@ import { loadSolanaSigner } from "./wallet.js";
 import type { ActivityService } from "./services/activity.js";
 import type { HealthService } from "./services/health.js";
 import type { RetryExecutionService } from "./services/retry.js";
+import type { SourcingService } from "./services/sourcing.js";
 
 export async function buildApi(
   config: AppConfig,
@@ -29,6 +30,7 @@ export async function buildApi(
   activity: ActivityService,
   health: HealthService,
   retryExecutions: RetryExecutionService,
+  sourcing: SourcingService,
 ) {
   const app = Fastify({ logger: true });
   await app.register(cors, {
@@ -193,6 +195,43 @@ export async function buildApi(
       clearInterval(keepAlive);
       unsubscribe();
       app.log.info({ userId: user.id }, "activity_stream_closed");
+    });
+  });
+
+  app.get("/api/sourcing/feed", async (req) => {
+    await requireUser(req, db);
+    return sourcing.feed();
+  });
+
+  app.get("/api/sourcing/candidates/:id", async (req) => {
+    await requireUser(req, db);
+    return sourcing.candidateDetail((req.params as any).id as string);
+  });
+
+  app.post("/api/sourcing/tokens/:mint/discover", async (req) => {
+    await requireUser(req, db);
+    const body = req.body as any;
+    return sourcing.discoverWinningToken({
+      mint: (req.params as any).mint as string,
+      peakMultiple:
+        body?.peakMultiple == null || body.peakMultiple === ""
+          ? null
+          : Number(body.peakMultiple),
+      maxBuyers: body?.maxBuyers == null ? 100 : Number(body.maxBuyers),
+      minTradeUsd: body?.minTradeUsd == null ? 10 : Number(body.minTradeUsd),
+    });
+  });
+
+  app.post("/api/sourcing/scan", async (req) => {
+    await requireUser(req, db);
+    return sourcing.scanTrendingTokens({
+      maxTokens: config.SOURCING_SCAN_MAX_TOKENS,
+      minLiquidityUsd: config.SOURCING_MIN_LIQUIDITY_USD,
+      minVolumeH1Usd: config.SOURCING_MIN_VOLUME_H1_USD,
+      minTxnsH1: config.SOURCING_MIN_TXNS_H1,
+      minAgeMinutes: config.SOURCING_MIN_AGE_MINUTES,
+      maxAgeHours: config.SOURCING_MAX_AGE_HOURS,
+      minPeakMultiple: config.SOURCING_MIN_PEAK_MULTIPLE,
     });
   });
 
