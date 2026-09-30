@@ -221,6 +221,61 @@ export class SourcingService {
     return { ok: true, analysis: publicAnalysis(saved) };
   }
 
+  async analyzeWallet(input: { wallet: string; label?: string | null }) {
+    const wallet = input.wallet.trim();
+    try {
+      new PublicKey(wallet);
+    } catch {
+      throw Object.assign(new Error("INVALID_SOLANA_WALLET"), {
+        statusCode: 400,
+      });
+    }
+    const candidate = await this.db.upsertWalletCandidate({
+      chain: "solana",
+      walletAddress: wallet,
+      displayName: input.label?.trim() || null,
+      metadata: { firstSource: "MANUAL_WALLET_ANALYSIS" },
+    });
+    await this.db.addWalletCandidateSource({
+      candidateId: candidate.id,
+      sourceType: "MANUAL_WALLET_ANALYSIS",
+      sourceProvider: this.earlyBuyers.provider,
+      sourceEntity: wallet,
+      sourceEventId: `manual:${wallet}`,
+      observedAt: new Date(),
+      metadata: { label: input.label ?? null },
+    });
+    await this.db.recalculateWalletSourceStats();
+    const result = await this.analyzeCandidate(candidate.id);
+    return {
+      ok: true,
+      candidate: publicCandidate({
+        ...candidate,
+        recommendation: result.analysis?.recommendation,
+        qualification_score: result.analysis?.qualification_score,
+        total_swaps: result.analysis?.total_swaps,
+        buy_count: result.analysis?.buy_count,
+        sell_count: result.analysis?.sell_count,
+        distinct_tokens: result.analysis?.distinct_tokens,
+        winning_token_hits: result.analysis?.winning_token_hits,
+        five_x_hits: result.analysis?.five_x_hits,
+        recent_non_winning_buys: result.analysis?.recent_non_winning_buys,
+        trades_per_day: result.analysis?.trades_per_day,
+        median_hold_minutes: result.analysis?.median_hold_minutes,
+        sell_coverage_pct: result.analysis?.sell_coverage_pct,
+        possible_bot: result.analysis?.possible_bot,
+        possible_router: result.analysis?.possible_router,
+        possible_deployer: result.analysis?.possible_deployer,
+        uses_multiple_fee_payers: result.analysis?.uses_multiple_fee_payers,
+        warnings: result.analysis?.warnings,
+        strengths: result.analysis?.strengths,
+        analysis_metadata: result.analysis?.metadata,
+        source_types: ["MANUAL_WALLET_ANALYSIS"],
+      }),
+      analysis: result.analysis,
+    };
+  }
+
   async bestCandidates(limit = 5) {
     const candidates = await this.db.listWalletCandidates(25, "priority");
     const analyzed: any[] = [];
@@ -242,8 +297,12 @@ export class SourcingService {
     const best = refreshed
       .map(publicCandidate)
       .filter((candidate: any) => {
-        const recommendation = candidate.analysis?.recommendation;
-        return recommendation !== "REJECT_BOT_OR_ROUTER_RISK";
+        const analysis = candidate.analysis;
+        return (
+          analysis &&
+          Number(analysis.total_swaps ?? 0) > 0 &&
+          analysis.recommendation !== "REJECT_BOT_OR_ROUTER_RISK"
+        );
       })
       .sort((a: any, b: any) => bestScore(b) - bestScore(a))
       .slice(0, limit);
@@ -343,9 +402,12 @@ function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwa
     (possibleBot ? 30 : 0) -
     (possibleRouter ? 25 : 0);
   qualificationScore = Math.max(0, Math.min(100, qualificationScore));
+  if (!swaps.length) qualificationScore = Math.min(qualificationScore, 45);
 
   const recommendation =
-    possibleBot || possibleRouter
+    !swaps.length
+      ? "WATCH_MORE"
+      : possibleBot || possibleRouter
       ? "REJECT_BOT_OR_ROUTER_RISK"
       : qualificationScore >= 75 && winningTokenHits >= 2
         ? "STRONG_CANDIDATE"

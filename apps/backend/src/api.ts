@@ -218,6 +218,15 @@ export async function buildApi(
     return sourcing.analyzeCandidate((req.params as any).id as string);
   });
 
+  app.post("/api/sourcing/wallets/analyze", async (req) => {
+    await requireUser(req, db);
+    const body = req.body as any;
+    return sourcing.analyzeWallet({
+      wallet: String(body?.wallet ?? ""),
+      label: body?.label == null ? null : String(body.label),
+    });
+  });
+
   app.post("/api/sourcing/tokens/:mint/discover", async (req) => {
     await requireUser(req, db);
     const body = req.body as any;

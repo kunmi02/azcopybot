@@ -147,6 +147,9 @@ export default function Home() {
   const [bestWallets, setBestWallets] = useState<any[] | null>(null);
   const [discoveryMint, setDiscoveryMint] = useState("");
   const [discoveryPeak, setDiscoveryPeak] = useState("5");
+  const [analysisWallet, setAnalysisWallet] = useState("");
+  const [analysisLabel, setAnalysisLabel] = useState("");
+  const [manualAnalysis, setManualAnalysis] = useState<any | null>(null);
 
   useEffect(() => {
     async function restoreSession() {
@@ -322,6 +325,33 @@ export default function Home() {
       });
       setBestWallets(result.wallets ?? []);
       setMessage(`Selected ${result.wallets?.length ?? 0} best candidate wallets.`);
+      await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function analyzeWallet(e: FormEvent) {
+    e.preventDefault();
+    if (!analysisWallet.trim()) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request("/api/sourcing/wallets/analyze", token, {
+        method: "POST",
+        body: JSON.stringify({
+          wallet: analysisWallet.trim(),
+          label: analysisLabel.trim() || null,
+        }),
+      });
+      setManualAnalysis(result.candidate ?? null);
+      setMessage(
+        `Wallet analysis: ${formatRecommendation(result.analysis?.recommendation)} (${Math.round(result.analysis?.qualification_score ?? 0)}/100).`,
+      );
+      setAnalysisWallet("");
+      setAnalysisLabel("");
       await loadSourcing();
     } catch (e) {
       setMessage(String(e));
@@ -1041,6 +1071,35 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
           Both paths are read-only: they store candidate wallets and evidence,
           but never follow or trade automatically.
         </p>
+        <form onSubmit={analyzeWallet} className="inlineForm discoveryForm">
+          <input
+            className="mono"
+            placeholder="Wallet address to analyze"
+            value={analysisWallet}
+            onChange={(e) => setAnalysisWallet(e.target.value)}
+          />
+          <input
+            placeholder="Optional label"
+            value={analysisLabel}
+            onChange={(e) => setAnalysisLabel(e.target.value)}
+          />
+          <button disabled={busy || !analysisWallet.trim()}>
+            Analyze wallet
+          </button>
+        </form>
+        {manualAnalysis && (
+          <div className="candidateBest">
+            <div className="leaderPanelHead">
+              <b>Wallet analysis result</b>
+              <span>{formatRecommendation(manualAnalysis.analysis?.recommendation)}</span>
+            </div>
+            <CandidateCard
+              candidate={manualAnalysis}
+              busy={busy}
+              onAnalyze={analyzeCandidate}
+            />
+          </div>
+        )}
         {bestWallets && (
           <div className="candidateBest">
             <div className="leaderPanelHead">
@@ -1058,8 +1117,8 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               ))}
               {!bestWallets.length && (
                 <p className="muted">
-                  No wallet is qualified yet. Let sourcing run longer or analyze
-                  more candidates.
+                  No wallet is qualified yet. A best wallet must have repeated
+                  sourcing evidence and recent wallet swap history.
                 </p>
               )}
             </div>
