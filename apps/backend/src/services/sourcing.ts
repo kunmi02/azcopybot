@@ -310,9 +310,19 @@ function isBestCandidateForKind(candidate: any, kind: "disciplined" | "aggressiv
   if (analysis.recommendation === "REJECT_ROUTER_OR_DEPLOYER") return false;
   const strategy = analysis.strategy_type ?? analysis.metadata?.strategy_type;
   if (kind === "aggressive") {
+    const botRiskScore = Number(analysis.bot_risk_score ?? analysis.metadata?.bot_risk_score ?? 0);
+    const copyScore = Number(analysis.copy_score ?? analysis.metadata?.copy_score ?? analysis.qualification_score ?? 0);
+    const winnerHits = Number(analysis.winning_token_hits ?? 0);
+    const fiveXHits = Number(analysis.five_x_hits ?? 0);
     return (
       strategy === "AGGRESSIVE_BOT" ||
-      analysis.recommendation === "AGGRESSIVE_BOT_CANDIDATE"
+      analysis.recommendation === "AGGRESSIVE_BOT_CANDIDATE" ||
+      (
+        Boolean(analysis.possible_bot) &&
+        botRiskScore >= 35 &&
+        copyScore >= 45 &&
+        (winnerHits >= 2 || fiveXHits >= 1)
+      )
     );
   }
   return (

@@ -91,6 +91,20 @@ function shortToken(value: string) {
   return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
 
+function leaderLabel(leader: any) {
+  return leader?.handle ? `@${leader.handle}` : leader?.display_name || "Leader";
+}
+
+function leaderDomId(leader: any) {
+  return `leader-${String(leader?.config_id ?? leader?.trader_id ?? leaderLabel(leader))
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 80)}`;
+}
+
+function leaderPositionCount(data: Dashboard, leader: any) {
+  return data.positions.filter((p) => p.trader_id === leader.trader_id).length;
+}
+
 function formatRecommendation(value?: string | null) {
   if (!value) return "Not analyzed";
   if (value === "STRONG_CANDIDATE") return "Strong candidate";
@@ -756,7 +770,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
 
   return (
     <main className="shell">
-      <header>
+      <header id="top">
         <div>
           <div className="eyebrow">COPYBOT</div>
           <h1>Trading control</h1>
@@ -798,9 +812,18 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         </div>
       </header>
 
+      <nav className="pageNav" aria-label="Dashboard sections">
+        <a href="#overview">Overview</a>
+        <a href="#health">Health</a>
+        <a href="#activity">Activity</a>
+        <a href="#follow">Follow</a>
+        <a href="#discovery">Discovery</a>
+        <a href="#leaders">Leaders</a>
+      </nav>
+
       {message && <div className="notice">{message}</div>}
 
-      <section className="stats">
+      <section id="overview" className="stats sectionAnchor">
         <div className="card stat">
           <span>Open positions</span>
           <strong>{data.positions.length}</strong>
@@ -832,7 +855,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         </div>
       </section>
 
-      <section className="opsGrid">
+      <section id="health" className="opsGrid sectionAnchor">
         <div className="card">
           <div className="sectionTitle">
             <h2>System health</h2>
@@ -918,7 +941,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
             />
           </div>
         </div>
-        <div className="card">
+        <div id="activity" className="card sectionAnchor">
           <div className="sectionTitle activityTitle">
             <h2>Activity feed</h2>
             <div className="activityControls">
@@ -981,7 +1004,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         </div>
       </section>
 
-      <section className="grid2">
+      <section id="follow" className="grid2 sectionAnchor">
         <div className="card">
           <div className="sectionTitle">
             <h2>Follow FOMO trader</h2>
@@ -1053,7 +1076,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         </div>
       </section>
 
-      <section className="card">
+      <section id="discovery" className="card sectionAnchor">
         <div className="sectionTitle">
           <h2>Trader Discovery</h2>
           <span>
@@ -1231,7 +1254,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         </div>
       </section>
 
-      <section className="card safetyCard">
+      <section id="safety" className="card safetyCard sectionAnchor">
         <div className="sectionTitle">
           <h2>Safety</h2>
           <span>defaults</span>
@@ -1244,7 +1267,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         </p>
       </section>
 
-      <section className="card">
+      <section id="leaders" className="card sectionAnchor">
         <div className="sectionTitle">
           <h2>Leaders</h2>
           <span>
@@ -1252,6 +1275,16 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
             {data.inactiveTraders?.length ?? 0} inactive
           </span>
         </div>
+        {!!(data.traders.length || data.inactiveTraders?.length) && (
+          <div className="leaderQuickNav" aria-label="Jump to leader">
+            {[...data.traders, ...(data.inactiveTraders ?? [])].map((leader) => (
+              <a key={leader.config_id} href={`#${leaderDomId(leader)}`}>
+                <span>{leaderLabel(leader)}</span>
+                <small>{leaderPositionCount(data, leader)} pos</small>
+              </a>
+            ))}
+          </div>
+        )}
         <div className="leaderList">
           {data.traders.map((leader) => (
             <LeaderCard
@@ -1414,7 +1447,7 @@ function LeaderCard({
   );
   const [copyTopups, setCopyTopups] = useState(Boolean(t.copy_topups));
   const [mirrorExits, setMirrorExits] = useState(Boolean(t.mirror_exits));
-  const label = t.handle ? `@${t.handle}` : t.display_name;
+  const label = leaderLabel(t);
   const leaderPositions = dashboard.positions.filter(
     (p) => p.trader_id === t.trader_id,
   );
@@ -1447,7 +1480,7 @@ function LeaderCard({
   }
 
   return (
-    <article className={`leaderCard ${isActive ? "" : "inactiveLeader"}`}>
+    <article id={leaderDomId(t)} className={`leaderCard sectionAnchor ${isActive ? "" : "inactiveLeader"}`}>
       <div className="leaderHead">
         <div>
           <h3>{label}</h3>
@@ -1455,6 +1488,11 @@ function LeaderCard({
             {t.wallets
               ?.map((w: any) => `${w.chain}:${String(w.address).slice(0, 8)}…`)
               .join(" · ")}
+          </div>
+          <div className="leaderStatsStrip">
+            <span>{livePositions.length} live</span>
+            <span>{paperPositions.length} paper</span>
+            <span>{executions.length} executions</span>
           </div>
         </div>
         <div className="actions">
@@ -1737,6 +1775,10 @@ function LeaderCard({
           </div>
         </LeaderPanel>
       </div>
+      <div className="leaderFooter">
+        <a href="#leaders">Back to leaders list</a>
+        <a href="#top">Back to top</a>
+      </div>
     </article>
   );
 }
@@ -1862,7 +1904,7 @@ function LeaderPanel({
         <b>{title}</b>
         <span>{count}</span>
       </div>
-      {children}
+      <div className="leaderPanelContent">{children}</div>
     </section>
   );
 }
