@@ -276,13 +276,13 @@ export class SourcingService {
     };
   }
 
-  async bestCandidates(limit = 5) {
-    const candidates = await this.db.listWalletCandidates(25, "priority");
+  async bestCandidates(limit = 5, kind: "disciplined" | "aggressive" = "disciplined") {
+    const candidates = await this.db.listWalletCandidates(50, "priority");
     const analyzed: any[] = [];
     for (const candidate of candidates) {
       if (
         !candidate.recommendation &&
-        analyzed.length < 10 &&
+        analyzed.length < 15 &&
         Number(candidate.source_priority ?? 0) >= 40
       ) {
         try {
@@ -293,35 +293,51 @@ export class SourcingService {
       }
       analyzed.push(candidate);
     }
-    const refreshed = await this.db.listWalletCandidates(25, "priority");
+    const refreshed = await this.db.listWalletCandidates(50, "priority");
     const best = refreshed
       .map(publicCandidate)
-      .filter((candidate: any) => {
-        const analysis = candidate.analysis;
-        return (
-          analysis &&
-          Number(analysis.total_swaps ?? 0) > 0 &&
-          analysis.recommendation !== "REJECT_BOT_OR_ROUTER_RISK"
-        );
-      })
-      .sort((a: any, b: any) => bestScore(b) - bestScore(a))
+      .filter((candidate: any) => isBestCandidateForKind(candidate, kind))
+      .sort((a: any, b: any) => bestScore(b, kind) - bestScore(a, kind))
       .slice(0, limit);
     return { wallets: best };
   }
 }
 
-function bestScore(candidate: any) {
+function isBestCandidateForKind(candidate: any, kind: "disciplined" | "aggressive") {
   const analysis = candidate.analysis;
+  if (!analysis) return false;
+  if (Number(analysis.total_swaps ?? 0) <= 0) return false;
+  if (analysis.recommendation === "REJECT_ROUTER_OR_DEPLOYER") return false;
+  const strategy = analysis.strategy_type ?? analysis.metadata?.strategy_type;
+  if (kind === "aggressive") {
+    return (
+      strategy === "AGGRESSIVE_BOT" ||
+      analysis.recommendation === "AGGRESSIVE_BOT_CANDIDATE"
+    );
+  }
   return (
-    Number(analysis?.qualification_score ?? 0) * 1.5 +
-    Number(candidate.source_priority ?? 0) +
-    Number(candidate.winning_token_appearances ?? 0) * 12 +
-    Number(candidate.five_x_appearances ?? 0) * 8 -
-    (analysis?.recommendation === "WATCH_MORE" ? 15 : 0)
+    strategy === "DISCIPLINED_FAST_TRADER" ||
+    analysis.recommendation === "DISCIPLINED_FAST_TRADER" ||
+    analysis.recommendation === "STRONG_CANDIDATE"
   );
 }
 
-function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwap[]) {
+function bestScore(candidate: any, kind: "disciplined" | "aggressive") {
+  const analysis = candidate.analysis;
+  const copyScore = Number(analysis?.copy_score ?? analysis?.metadata?.copy_score ?? analysis?.qualification_score ?? 0);
+  const riskScore = Number(analysis?.risk_score ?? analysis?.metadata?.risk_score ?? 0);
+  return (
+    copyScore * 1.8 +
+    Number(candidate.source_priority ?? 0) * 0.8 +
+    Number(candidate.winning_token_appearances ?? 0) * 10 +
+    Number(candidate.five_x_appearances ?? 0) * 8 -
+    (kind === "disciplined" ? riskScore * 0.35 : riskScore * 0.15) -
+    (analysis?.recommendation === "PAPER_ONLY" ? 20 : 0) -
+    (analysis?.recommendation === "WATCH_MORE" ? 35 : 0)
+  );
+}
+
+export function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwap[]) {
   const buys = swaps.filter((swap) => swap.side === "buy");
   const sells = swaps.filter((swap) => swap.side === "sell");
   const boughtTokens = new Set(buys.map((swap) => swap.token));
@@ -337,8 +353,15 @@ function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwa
       .map((source) => source.token_mint)
       .filter((token): token is string => Boolean(token)),
   );
+  const tenXTokens = new Set(
+    sources
+      .filter((source) => Number(source.metadata?.tokenPeakMultiple ?? 0) >= 10)
+      .map((source) => source.token_mint)
+      .filter((token): token is string => Boolean(token)),
+  );
   const winningTokenHits = sourceTokens.size;
   const fiveXHits = fiveXTokens.size;
+  const tenXHits = tenXTokens.size;
   const recentNonWinningBuys = [...boughtTokens].filter(
     (token) => !sourceTokens.has(token),
   ).length;
@@ -356,6 +379,12 @@ function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwa
     ? (100 * [...boughtTokens].filter((token) => soldTokens.has(token)).length) /
       boughtTokens.size
     : null;
+  const buySellBalance = buys.length
+    ? Math.min(100, (sells.length / buys.length) * 100)
+    : 0;
+  const nonWinningRatio = boughtTokens.size
+    ? recentNonWinningBuys / boughtTokens.size
+    : 0;
   const feePayers = new Set(
     swaps.map((swap) => swap.feePayer).filter((feePayer): feePayer is string => Boolean(feePayer)),
   );
@@ -368,56 +397,121 @@ function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwa
     swaps.length >= 90 ||
     (boughtTokens.size >= 35 && swaps.length >= 60);
   const possibleRouter =
-    usesMultipleFeePayers || (sells.length > buys.length * 2 && swaps.length > 25);
-  const possibleDeployer = false;
+    usesMultipleFeePayers ||
+    (sells.length > buys.length * 2 && swaps.length > 25) ||
+    (feePayers.size >= 8 && swaps.length >= 30);
+  const possibleDeployer =
+    sellCoveragePct != null &&
+    sellCoveragePct < 5 &&
+    boughtTokens.size >= 25 &&
+    winningTokenHits <= 1;
   const sellTooEarly =
     medianHoldMinutes != null && medianHoldMinutes < 10 && fiveXHits >= 2;
-  const nonWinningRatio = boughtTokens.size
-    ? recentNonWinningBuys / boughtTokens.size
-    : 0;
+
+  const sourcePriority = Number(candidate.source_priority ?? 0);
+  const rankBoost = candidate.median_buyer_rank == null
+    ? 0
+    : Math.max(0, 16 - Number(candidate.median_buyer_rank) / 5);
+  const evidenceScore = clamp(
+    sourcePriority * 0.35 +
+      Math.min(35, winningTokenHits * 9) +
+      Math.min(25, fiveXHits * 8) +
+      rankBoost +
+      (swaps.length ? 10 : 0),
+  );
+  const winRepeatScore = clamp(
+    winningTokenHits * 16 + fiveXHits * 18 + tenXHits * 12 + rankBoost,
+  );
+  const holdScore = medianHoldMinutes == null
+    ? 35
+    : medianHoldMinutes < 5
+      ? 15
+      : medianHoldMinutes < 20
+        ? 45
+        : medianHoldMinutes <= 720
+          ? 78
+          : 62;
+  const exitQualityScore = clamp(
+    (sellCoveragePct ?? 0) * 0.55 + buySellBalance * 0.25 + holdScore * 0.2,
+  );
+  const botRiskScore = clamp(
+    (possibleRouter ? 85 : 0) +
+      (possibleDeployer ? 80 : 0) +
+      (possibleBot ? 45 : 0) +
+      (usesMultipleFeePayers ? 25 : 0) +
+      (tradesPerDay > 150 ? 20 : tradesPerDay > 80 ? 10 : 0),
+  );
+  const riskScore = clamp(
+    botRiskScore +
+      (sellCoveragePct == null ? 20 : sellCoveragePct < 10 ? 20 : 0) +
+      Math.min(25, nonWinningRatio * 25),
+  );
+  let copyScore =
+    evidenceScore * 0.4 +
+    winRepeatScore * 0.3 +
+    exitQualityScore * 0.3 -
+    (possibleRouter || possibleDeployer ? 50 : 0) -
+    Math.min(20, nonWinningRatio * 20) -
+    (!swaps.length ? 25 : 0);
+  if (possibleBot && !possibleRouter && !possibleDeployer && winningTokenHits >= 3) {
+    copyScore += 8;
+  }
+  copyScore = clamp(copyScore);
 
   const strengths: string[] = [];
   const warnings: string[] = [];
   if (winningTokenHits >= 2)
     strengths.push(`Repeated early buyer across ${winningTokenHits} winning tokens`);
   if (fiveXHits >= 2) strengths.push(`Early in ${fiveXHits} tokens that moved 5x+`);
-  if (Number(candidate.source_priority ?? 0) >= 75)
-    strengths.push("High sourcing priority");
-  if (medianHoldMinutes != null && medianHoldMinutes >= 30)
+  if (tenXHits >= 1) strengths.push(`Caught ${tenXHits} token${tenXHits === 1 ? "" : "s"} that moved 10x+`);
+  if (sourcePriority >= 75) strengths.push("High sourcing priority");
+  if (medianHoldMinutes != null && medianHoldMinutes >= 20)
     strengths.push(`Median observed hold about ${Math.round(medianHoldMinutes)} minutes`);
+  if (sellCoveragePct != null && sellCoveragePct >= 30)
+    strengths.push(`Observed sells for ${Math.round(sellCoveragePct)}% of bought tokens`);
+  if (possibleBot && !possibleRouter && !possibleDeployer)
+    strengths.push("Fast/high-frequency wallet with repeated winner evidence");
   if (possibleBot) warnings.push("High-frequency or very broad token activity");
-  if (possibleRouter) warnings.push("Router/bot-like fee-payer or sell pattern");
+  if (possibleRouter) warnings.push("Router-like fee-payer or sell pattern");
+  if (possibleDeployer) warnings.push("Deployer/farm-like pattern with poor exit evidence");
   if (sellTooEarly) warnings.push("Often sells quickly after buying");
   if (nonWinningRatio > 0.8 && boughtTokens.size >= 10)
     warnings.push("Many recent buys were not part of the winning-token evidence");
+  if (sellCoveragePct != null && sellCoveragePct < 10 && boughtTokens.size >= 8)
+    warnings.push("Very low observed sell coverage");
   if (!swaps.length) warnings.push("No recent wallet swap history returned by provider");
 
-  let qualificationScore =
-    Math.min(45, Number(candidate.source_priority ?? 0) * 0.45) +
-    winningTokenHits * 11 +
-    fiveXHits * 8 +
-    (medianHoldMinutes == null ? 0 : medianHoldMinutes >= 30 ? 10 : -6) +
-    (sellCoveragePct == null ? 0 : sellCoveragePct >= 25 ? 5 : -4) -
-    Math.min(24, nonWinningRatio * 24) -
-    (possibleBot ? 30 : 0) -
-    (possibleRouter ? 25 : 0);
-  qualificationScore = Math.max(0, Math.min(100, qualificationScore));
-  if (!swaps.length) qualificationScore = Math.min(qualificationScore, 45);
-
-  const recommendation =
-    !swaps.length
-      ? "WATCH_MORE"
-      : possibleBot || possibleRouter
-      ? "REJECT_BOT_OR_ROUTER_RISK"
-      : qualificationScore >= 75 && winningTokenHits >= 2
-        ? "STRONG_CANDIDATE"
-        : qualificationScore >= 50
-          ? "PAPER_ONLY"
-          : "WATCH_MORE";
+  let strategyType: "DISCIPLINED_FAST_TRADER" | "AGGRESSIVE_BOT" | "UNKNOWN" = "UNKNOWN";
+  let recommendation: string;
+  if (possibleRouter || possibleDeployer) {
+    recommendation = "REJECT_ROUTER_OR_DEPLOYER";
+  } else if (!swaps.length) {
+    recommendation = "WATCH_MORE";
+  } else if (
+    !possibleBot &&
+    copyScore >= 70 &&
+    winningTokenHits >= 2 &&
+    (sellCoveragePct ?? 0) >= 20
+  ) {
+    strategyType = "DISCIPLINED_FAST_TRADER";
+    recommendation = "DISCIPLINED_FAST_TRADER";
+  } else if (
+    possibleBot &&
+    copyScore >= 65 &&
+    (winningTokenHits >= 3 || fiveXHits >= 2) &&
+    (sellCoveragePct ?? 0) >= 10
+  ) {
+    strategyType = "AGGRESSIVE_BOT";
+    recommendation = "AGGRESSIVE_BOT_CANDIDATE";
+  } else if (copyScore >= 50 || winningTokenHits >= 2) {
+    recommendation = "PAPER_ONLY";
+  } else {
+    recommendation = "WATCH_MORE";
+  }
 
   return {
     recommendation,
-    qualificationScore,
+    qualificationScore: copyScore,
     totalSwaps: swaps.length,
     buyCount: buys.length,
     sellCount: sells.length,
@@ -435,15 +529,25 @@ function buildCandidateAnalysis(candidate: any, sources: any[], swaps: WalletSwa
     warnings,
     strengths,
     metadata: {
-      sampledSwaps: swaps.slice(0, 20).map((swap) => ({
+      strategy_type: strategyType,
+      copy_score: copyScore,
+      risk_score: riskScore,
+      evidence_score: evidenceScore,
+      win_repeat_score: winRepeatScore,
+      exit_quality_score: exitQualityScore,
+      bot_risk_score: botRiskScore,
+      ten_x_hits: tenXHits,
+      non_winning_ratio: nonWinningRatio,
+      sampled_swaps: swaps.slice(0, 20).map((swap) => ({
         signature: swap.signature,
         timestamp: swap.timestamp.toISOString(),
         side: swap.side,
         token: swap.token,
         tokenAmount: swap.tokenAmount,
+        quoteAmount: swap.quoteAmount,
       })),
       caveat:
-        "Win/loss is inferred from repeated early-buyer evidence and recent swap behavior. It does not prove realized PnL without full historical cost-basis reconstruction.",
+        "This is copy-worthiness scoring from sourcing evidence and recent swap behavior. Paper-follow first before live.",
     },
   };
 }
@@ -465,6 +569,11 @@ function estimateHoldMinutes(buys: WalletSwap[], sells: WalletSwap[]) {
     }
   }
   return minutes;
+}
+
+function clamp(value: number, min = 0, max = 100) {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
 }
 
 function median(values: number[]) {
@@ -566,10 +675,19 @@ function publicSourcingStats(row: any) {
 
 function publicAnalysis(row: any) {
   if (!row) return null;
+  const metadata = row.analysis_metadata ?? row.metadata ?? {};
   return {
     analyzed_at: row.analyzed_at,
     recommendation: row.recommendation,
-    qualification_score: Number(row.qualification_score ?? 0),
+    strategy_type: metadata.strategy_type ?? "UNKNOWN",
+    qualification_score: Number(row.qualification_score ?? metadata.copy_score ?? 0),
+    copy_score: Number(metadata.copy_score ?? row.qualification_score ?? 0),
+    risk_score: Number(metadata.risk_score ?? 0),
+    evidence_score: Number(metadata.evidence_score ?? 0),
+    win_repeat_score: Number(metadata.win_repeat_score ?? 0),
+    exit_quality_score: Number(metadata.exit_quality_score ?? 0),
+    bot_risk_score: Number(metadata.bot_risk_score ?? 0),
+    ten_x_hits: Number(metadata.ten_x_hits ?? 0),
     total_swaps: Number(row.total_swaps ?? 0),
     buy_count: Number(row.buy_count ?? 0),
     sell_count: Number(row.sell_count ?? 0),
@@ -591,6 +709,7 @@ function publicAnalysis(row: any) {
     uses_multiple_fee_payers: Boolean(row.uses_multiple_fee_payers),
     warnings: row.warnings ?? [],
     strengths: row.strengths ?? [],
-    metadata: row.analysis_metadata ?? row.metadata ?? {},
+    metadata,
+    sampled_swaps: metadata.sampled_swaps ?? [],
   };
 }

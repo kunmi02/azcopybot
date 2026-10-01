@@ -94,15 +94,19 @@ function shortToken(value: string) {
 function formatRecommendation(value?: string | null) {
   if (!value) return "Not analyzed";
   if (value === "STRONG_CANDIDATE") return "Strong candidate";
+  if (value === "DISCIPLINED_FAST_TRADER") return "Disciplined fast trader";
+  if (value === "AGGRESSIVE_BOT_CANDIDATE") return "Aggressive bot candidate";
   if (value === "PAPER_ONLY") return "Paper only";
   if (value === "WATCH_MORE") return "Watch more";
   if (value === "REJECT_BOT_OR_ROUTER_RISK") return "Reject: bot/router risk";
+  if (value === "REJECT_ROUTER_OR_DEPLOYER") return "Reject: router/deployer";
   return value.replaceAll("_", " ").toLowerCase();
 }
 
 function recommendationClass(value?: string | null) {
-  if (value === "STRONG_CANDIDATE") return "live";
-  if (value === "REJECT_BOT_OR_ROUTER_RISK") return "danger";
+  if (value === "STRONG_CANDIDATE" || value === "DISCIPLINED_FAST_TRADER") return "live";
+  if (value === "AGGRESSIVE_BOT_CANDIDATE") return "warn";
+  if (value === "REJECT_BOT_OR_ROUTER_RISK" || value === "REJECT_ROUTER_OR_DEPLOYER") return "danger";
   return "paper";
 }
 
@@ -145,6 +149,7 @@ export default function Home() {
     stats?: any;
   } | null>(null);
   const [bestWallets, setBestWallets] = useState<any[] | null>(null);
+  const [bestWalletKind, setBestWalletKind] = useState<"disciplined" | "aggressive">("disciplined");
   const [discoveryMint, setDiscoveryMint] = useState("");
   const [discoveryPeak, setDiscoveryPeak] = useState("5");
   const [analysisWallet, setAnalysisWallet] = useState("");
@@ -315,17 +320,43 @@ export default function Home() {
     }
   }
 
-  async function loadBestWallets() {
+  async function loadBestWallets(kind: "disciplined" | "aggressive") {
     setBusy(true);
     setMessage("");
+    setBestWalletKind(kind);
     try {
       const result = await request("/api/sourcing/candidates/best", token, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ kind, limit: 5 }),
       });
       setBestWallets(result.wallets ?? []);
-      setMessage(`Selected ${result.wallets?.length ?? 0} best candidate wallets.`);
+      setMessage(
+        `Selected ${result.wallets?.length ?? 0} ${kind === "aggressive" ? "aggressive bot" : "disciplined"} candidate wallets.`,
+      );
       await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function paperFollowCandidate(candidate: any) {
+    const label = candidate.display_name || `Discovery ${shortToken(candidate.wallet_address)}`;
+    if (!confirm(`Paper-follow ${label} at ${candidate.wallet_address}?`)) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await request("/api/traders/wallet", token, {
+        method: "POST",
+        body: JSON.stringify({
+          label,
+          chain: "solana",
+          address: candidate.wallet_address,
+        }),
+      });
+      setMessage(`${label} added in paper mode. Live is still off until you explicitly enable it.`);
+      await Promise.all([load(), loadSourcing()]);
     } catch (e) {
       setMessage(String(e));
     } finally {
@@ -1042,8 +1073,19 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
           <button disabled={busy} onClick={scanDiscovery}>
             Scan now
           </button>
-          <button className="secondary" disabled={busy} onClick={loadBestWallets}>
-            Show best 5 wallets
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() => loadBestWallets("disciplined")}
+          >
+            Best disciplined 5
+          </button>
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() => loadBestWallets("aggressive")}
+          >
+            Best aggressive bots
           </button>
         </div>
         <form onSubmit={discoverToken} className="inlineForm discoveryForm">
@@ -1097,13 +1139,18 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               candidate={manualAnalysis}
               busy={busy}
               onAnalyze={analyzeCandidate}
+              onPaperFollow={paperFollowCandidate}
             />
           </div>
         )}
         {bestWallets && (
           <div className="candidateBest">
             <div className="leaderPanelHead">
-              <b>Best 5 wallets to paper-follow</b>
+              <b>
+                {bestWalletKind === "aggressive"
+                  ? "Best aggressive bot wallets to paper-follow"
+                  : "Best disciplined wallets to paper-follow"}
+              </b>
               <span>{bestWallets.length}</span>
             </div>
             <div className="candidateList">
@@ -1113,12 +1160,13 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
                   candidate={c}
                   busy={busy}
                   onAnalyze={analyzeCandidate}
+                  onPaperFollow={paperFollowCandidate}
                 />
               ))}
               {!bestWallets.length && (
                 <p className="muted">
-                  No wallet is qualified yet. A best wallet must have repeated
-                  sourcing evidence and recent wallet swap history.
+                  No wallet is qualified yet for this lane. Let the scanner gather
+                  more winners, or analyze a wallet manually.
                 </p>
               )}
             </div>
@@ -1139,6 +1187,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
                     candidate={c}
                     busy={busy}
                     onAnalyze={analyzeCandidate}
+                    onPaperFollow={paperFollowCandidate}
                   />
                 ))}
               {!sourcing?.candidates?.length && (
@@ -1696,10 +1745,12 @@ function CandidateCard({
   candidate,
   busy,
   onAnalyze,
+  onPaperFollow,
 }: {
   candidate: any;
   busy: boolean;
   onAnalyze: (candidate: any) => void;
+  onPaperFollow?: (candidate: any) => void;
 }) {
   const analysis = candidate.analysis;
   return (
@@ -1720,9 +1771,17 @@ function CandidateCard({
           <span
             className={`badge ${recommendationClass(analysis.recommendation)}`}
           >
-            {formatRecommendation(analysis.recommendation)} ·{" "}
-            {Math.round(analysis.qualification_score)}/100
+            {formatRecommendation(analysis.recommendation)} · Copy {Math.round(analysis.copy_score ?? analysis.qualification_score)}/100
           </span>
+          <div className="candidateScoreGrid">
+            <span>Risk <b>{Math.round(analysis.risk_score ?? 0)}</b></span>
+            <span>Evidence <b>{Math.round(analysis.evidence_score ?? 0)}</b></span>
+            <span>Winners <b>{Math.round(analysis.win_repeat_score ?? 0)}</b></span>
+            <span>Exit <b>{Math.round(analysis.exit_quality_score ?? 0)}</b></span>
+          </div>
+          <p>
+            Strategy: {String(analysis.strategy_type ?? "UNKNOWN").replaceAll("_", " ").toLowerCase()}
+          </p>
           <p>
             Swaps: {analysis.total_swaps} · Buys: {analysis.buy_count} · Sells:{" "}
             {analysis.sell_count} · Tokens: {analysis.distinct_tokens}
@@ -1737,6 +1796,8 @@ function CandidateCard({
             {analysis.median_hold_minutes == null
               ? "—"
               : `${Math.round(analysis.median_hold_minutes)}m`}
+            {" · "}
+            Sells: {analysis.sell_coverage_pct == null ? "—" : `${Math.round(analysis.sell_coverage_pct)}% coverage`}
           </p>
           {!!analysis.warnings?.length && (
             <small>Warnings: {analysis.warnings.join("; ")}</small>
@@ -1744,18 +1805,44 @@ function CandidateCard({
           {!!analysis.strengths?.length && (
             <small>Strengths: {analysis.strengths.join("; ")}</small>
           )}
+          {!!analysis.sampled_swaps?.length && (
+            <details className="candidateEvidence">
+              <summary>View recent swap evidence</summary>
+              <div>
+                {analysis.sampled_swaps.slice(0, 8).map((swap: any) => (
+                  <p key={`${swap.signature}:${swap.side}:${swap.token}`}>
+                    <b className={swap.side === "sell" ? "sell" : "buy"}>
+                      {String(swap.side).toUpperCase()}
+                    </b>{" "}
+                    {shortToken(swap.token)} · {new Date(swap.timestamp).toLocaleString()}
+                  </p>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       )}
       <small>
         {(candidate.source_types ?? []).join(", ") || "No sources yet"}
       </small>
-      <button
-        className="miniButton"
-        disabled={busy}
-        onClick={() => onAnalyze(candidate)}
-      >
-        {analysis ? "Re-analyze" : "Analyze"}
-      </button>
+      <div className="candidateActions">
+        <button
+          className="miniButton"
+          disabled={busy}
+          onClick={() => onAnalyze(candidate)}
+        >
+          {analysis ? "Re-analyze" : "Analyze"}
+        </button>
+        {onPaperFollow && (
+          <button
+            className="miniButton secondary"
+            disabled={busy}
+            onClick={() => onPaperFollow(candidate)}
+          >
+            Paper follow
+          </button>
+        )}
+      </div>
     </article>
   );
 }

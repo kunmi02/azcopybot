@@ -1,4 +1,4 @@
-import { VersionedTransaction } from "@solana/web3.js";
+import { Transaction, VersionedTransaction } from "@solana/web3.js";
 import type { Keypair } from "@solana/web3.js";
 import { SolanaRpc } from "../chains/solana/rpc.js";
 
@@ -17,11 +17,21 @@ export async function submitSignedTransaction(
   base64Transaction: string,
   signer: Keypair,
 ): Promise<string> {
-  const tx = VersionedTransaction.deserialize(Buffer.from(base64Transaction, "base64"));
+  const raw = Buffer.from(base64Transaction, "base64");
   const latest: any = await rpc.call("getLatestBlockhash", [{ commitment: "confirmed" }]);
-  tx.message.recentBlockhash = latest.value.blockhash;
-  tx.sign([signer]);
-  const signed = Buffer.from(tx.serialize()).toString("base64");
+  let signed: string;
+  try {
+    const tx = VersionedTransaction.deserialize(raw);
+    tx.message.recentBlockhash = latest.value.blockhash;
+    tx.sign([signer]);
+    signed = Buffer.from(tx.serialize()).toString("base64");
+  } catch {
+    const tx = Transaction.from(raw);
+    tx.recentBlockhash = latest.value.blockhash;
+    tx.feePayer = tx.feePayer ?? signer.publicKey;
+    tx.sign(signer);
+    signed = tx.serialize().toString("base64");
+  }
 
   const signature = await rpc.call<string>("sendTransaction", [signed, {
     encoding: "base64",

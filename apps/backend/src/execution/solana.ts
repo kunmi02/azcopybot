@@ -1,6 +1,7 @@
 import { DexScreenerPriceService } from "../services/pricing.js";
 import { SolanaRpc } from "../chains/solana/rpc.js";
 import { JupiterClient } from "./jupiter.js";
+import { OkxRouter } from "./okx.js";
 import { submitSignedTransaction } from "./submit.js";
 import { VersionedTransaction } from "@solana/web3.js";
 import { loadSolanaSigner } from "../wallet.js";
@@ -13,6 +14,8 @@ export class SolanaExecutor {
     private readonly rpc: SolanaRpc,
     private readonly jupiter: JupiterClient,
     private readonly prices: DexScreenerPriceService,
+    private readonly okx?: OkxRouter,
+    private readonly token2022FallbackEnabled = false,
   ) {}
 
   async buy(input: {
@@ -34,10 +37,12 @@ export class SolanaExecutor {
     return this.withMissingTokenProgramRetry(async () => {
       await input.onProgress?.("quote_requested", "Jupiter quote requested", { token: input.token, amountUsd: input.amountUsd });
       const transferFeeBps = await this.rpc.transferFeeBps(input.token);
+      if (transferFeeBps !== 0) {
+        return this.buyWithFallback(input, inputAmount, transferFeeBps, signer);
+      }
       if (this.jupiter.usesSwapV2) {
         const order = await this.jupiter.order(SOLANA_USDC, input.token, inputAmount, input.slippageBps, input.expectedPublicAddress);
         await input.onProgress?.("quote_received", "Jupiter order received", { token: input.token, outAmount: order.outAmount, router: order.router, mode: order.mode, transferFeeBps });
-        if (transferFeeBps !== 0) throw new Error(`TOKEN_2022_TRANSFER_FEE_REQUIRES_FALLBACK:${transferFeeBps}`);
         await this.assertQuoteValue(input.token, BigInt(order.outAmount), input.amountUsd);
         await input.onProgress?.("transaction_submitting", "Signing and executing buy transaction", { token: input.token, router: order.router });
         const result = await this.signAndExecuteOrder(order.transaction!, order.requestId, signer);
@@ -52,12 +57,6 @@ export class SolanaExecutor {
         this.jupiter.quote(SOLANA_USDC, input.token, inputAmount, input.slippageBps),
       ]);
       await input.onProgress?.("quote_received", "Jupiter quote received", { token: input.token, outAmount: quote.outAmount, transferFeeBps });
-
-      if (transferFeeBps !== 0) {
-        // The supplied spec requires a tested fallback router here. We refuse rather than silently use a dangerous route.
-        throw new Error(`TOKEN_2022_TRANSFER_FEE_REQUIRES_FALLBACK:${transferFeeBps}`);
-      }
-
       await this.assertQuoteValue(input.token, BigInt(quote.outAmount), input.amountUsd);
       const swap = await this.jupiter.buildSwap(quote, input.expectedPublicAddress);
       await input.onProgress?.("transaction_submitting", "Signing and submitting buy transaction", { token: input.token });
@@ -90,10 +89,12 @@ export class SolanaExecutor {
     return this.withMissingTokenProgramRetry(async () => {
       await input.onProgress?.("quote_requested", "Jupiter sell quote requested", { token: input.token, tokenQty: input.tokenQty, expectedUsd: input.expectedUsd });
       const transferFeeBps = await this.rpc.transferFeeBps(input.token);
+      if (transferFeeBps !== 0) {
+        return this.sellWithFallback(input, rawQty, transferFeeBps, signer);
+      }
       if (this.jupiter.usesSwapV2) {
         const order = await this.jupiter.order(input.token, SOLANA_USDC, rawQty, input.slippageBps, input.expectedPublicAddress);
         await input.onProgress?.("quote_received", "Jupiter sell order received", { token: input.token, outAmount: order.outAmount, router: order.router, mode: order.mode, transferFeeBps });
-        if (transferFeeBps !== 0) throw new Error(`TOKEN_2022_TRANSFER_FEE_REQUIRES_FALLBACK:${transferFeeBps}`);
         const quotedUsd = Number(BigInt(order.outAmount)) / 1_000_000;
         if (input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
         await input.onProgress?.("transaction_submitting", "Signing and executing sell transaction", { token: input.token, router: order.router });
@@ -106,7 +107,6 @@ export class SolanaExecutor {
         this.jupiter.quote(input.token, SOLANA_USDC, rawQty, input.slippageBps),
       ]);
       await input.onProgress?.("quote_received", "Jupiter sell quote received", { token: input.token, outAmount: quote.outAmount, transferFeeBps });
-      if (transferFeeBps !== 0) throw new Error(`TOKEN_2022_TRANSFER_FEE_REQUIRES_FALLBACK:${transferFeeBps}`);
 
       const quotedUsd = Number(BigInt(quote.outAmount)) / 1_000_000;
       if (input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
@@ -115,6 +115,102 @@ export class SolanaExecutor {
       const txHash = await submitSignedTransaction(this.rpc, swap, signer);
       return { txHash, actualUsd: quotedUsd, executionPrice: quotedUsd / input.tokenQty };
     });
+  }
+
+  private async buyWithFallback(
+    input: {
+      signerRef: string;
+      expectedPublicAddress: string;
+      token: string;
+      amountUsd: number;
+      slippageBps: number;
+      onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
+    },
+    inputAmount: bigint,
+    transferFeeBps: number,
+    signer: import("@solana/web3.js").Keypair,
+  ) {
+    this.assertFallbackReady(transferFeeBps);
+    await input.onProgress?.("quote_requested", "OKX fallback buy route requested", {
+      token: input.token,
+      amountUsd: input.amountUsd,
+      transferFeeBps,
+    });
+    const route = await this.okx!.swap({
+      fromTokenAddress: SOLANA_USDC,
+      toTokenAddress: input.token,
+      amount: inputAmount,
+      slippageBps: input.slippageBps,
+      userWalletAddress: input.expectedPublicAddress,
+    });
+    await input.onProgress?.("quote_received", "OKX fallback buy route received", {
+      token: input.token,
+      outAmount: route.outAmount,
+      transferFeeBps,
+      router: "okx",
+    });
+    await this.assertQuoteValue(input.token, BigInt(route.outAmount), input.amountUsd);
+    await input.onProgress?.("transaction_submitting", "Signing and submitting OKX fallback buy transaction", {
+      token: input.token,
+      router: "okx",
+    });
+    const txHash = await submitSignedTransaction(this.rpc, route.transactionBase64, signer);
+    const decimals = await this.rpc.tokenDecimals(input.token);
+    const tokenQty = Number(BigInt(route.outAmount)) / 10 ** decimals;
+    const executionPrice = input.amountUsd / tokenQty;
+    return { txHash, tokenQty, actualUsd: input.amountUsd, executionPrice };
+  }
+
+  private async sellWithFallback(
+    input: {
+      signerRef: string;
+      expectedPublicAddress: string;
+      token: string;
+      tokenQty: number;
+      slippageBps: number;
+      expectedUsd: number;
+      onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
+    },
+    rawQty: bigint,
+    transferFeeBps: number,
+    signer: import("@solana/web3.js").Keypair,
+  ) {
+    this.assertFallbackReady(transferFeeBps);
+    await input.onProgress?.("quote_requested", "OKX fallback sell route requested", {
+      token: input.token,
+      tokenQty: input.tokenQty,
+      transferFeeBps,
+    });
+    const route = await this.okx!.swap({
+      fromTokenAddress: input.token,
+      toTokenAddress: SOLANA_USDC,
+      amount: rawQty,
+      slippageBps: input.slippageBps,
+      userWalletAddress: input.expectedPublicAddress,
+    });
+    await input.onProgress?.("quote_received", "OKX fallback sell route received", {
+      token: input.token,
+      outAmount: route.outAmount,
+      transferFeeBps,
+      router: "okx",
+    });
+    const actualUsd = Number(BigInt(route.outAmount)) / 1_000_000;
+    if (input.expectedUsd > 1 && actualUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
+    await input.onProgress?.("transaction_submitting", "Signing and submitting OKX fallback sell transaction", {
+      token: input.token,
+      router: "okx",
+    });
+    const txHash = await submitSignedTransaction(this.rpc, route.transactionBase64, signer);
+    return { txHash, actualUsd, executionPrice: actualUsd / input.tokenQty };
+  }
+
+  private assertFallbackReady(transferFeeBps: number) {
+    if (!this.token2022FallbackEnabled) {
+      throw new Error(`TOKEN_2022_FALLBACK_DISABLED:${transferFeeBps}`);
+    }
+    if (!this.okx?.isConfigured()) {
+      throw new Error(`TOKEN_2022_FALLBACK_NOT_CONFIGURED:${transferFeeBps}`);
+    }
   }
 
   private async signAndExecuteOrder(base64Transaction: string, requestId: string, signer: import("@solana/web3.js").Keypair) {

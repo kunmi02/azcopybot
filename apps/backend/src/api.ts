@@ -205,7 +205,10 @@ export async function buildApi(
 
   app.post("/api/sourcing/candidates/best", async (req) => {
     await requireUser(req, db);
-    return sourcing.bestCandidates(5);
+    const body = req.body as any;
+    const kind = body?.kind === "aggressive" ? "aggressive" : "disciplined";
+    const limit = Math.max(1, Math.min(10, Number(body?.limit ?? 5) || 5));
+    return sourcing.bestCandidates(limit, kind);
   });
 
   app.get("/api/sourcing/candidates/:id", async (req) => {

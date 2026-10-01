@@ -4,6 +4,7 @@ import { FomoScanClient } from "./sources/fomoscan.js";
 import { DexScreenerPriceService } from "./services/pricing.js";
 import { SolanaRpc } from "./chains/solana/rpc.js";
 import { JupiterClient } from "./execution/jupiter.js";
+import { OkxRouter } from "./execution/okx.js";
 import { SolanaExecutor } from "./execution/solana.js";
 import { SolanaGrpcWatcher } from "./chains/solana/grpc.js";
 import { CopyTradeService } from "./services/copytrade.js";
@@ -47,7 +48,20 @@ const jupiter = new JupiterClient(
   config.JUPITER_API_BASE,
   config.JUPITER_API_KEY,
 );
-const executor = new SolanaExecutor(rpc, jupiter, prices);
+const okx = new OkxRouter(
+  config.OKX_API_BASE,
+  config.OKX_API_KEY,
+  config.OKX_API_SECRET,
+  config.OKX_API_PASSPHRASE,
+  config.OKX_PROJECT_ID,
+);
+const executor = new SolanaExecutor(
+  rpc,
+  jupiter,
+  prices,
+  okx,
+  config.TOKEN_2022_FALLBACK_ENABLED,
+);
 const activity = new ActivityService(db);
 const health = new HealthService();
 

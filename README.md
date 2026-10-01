@@ -70,7 +70,7 @@ The source platform is deliberately not inside the execution path. Adding anothe
 9. Relay-style receives require a real quote movement and at least $1,000 market liquidity before they can be treated as buys.
 10. Live Jupiter output is sanity-checked against DexScreener before signing.
 11. The copy wallet must retain at least 0.05 SOL for gas/account creation.
-12. Token-2022 transfer-fee mints are currently **refused** in live mode until the OKX fallback adapter has been tested and wired. The bot will not silently use a bad dust-pool route.
+12. Token-2022 transfer-fee mints are refused unless the explicit OKX fallback is enabled and configured. The bot will not silently use a bad dust-pool route.
 13. An unknown/stale watched wallet is dropped rather than broadcast to every user.
 
 ## What is implemented
@@ -113,6 +113,7 @@ It includes fixtures for:
 - Fixed USD size per copied trade.
 - Paper positions and paper exits.
 - Live buy/sell execution path for standard SPL tokens through Jupiter.
+- Opt-in OKX fallback for Token-2022 transfer-fee mints, with the same DexScreener value sanity checks.
 - Take-profit.
 - Stop-loss.
 - Maximum hold time.
@@ -133,7 +134,7 @@ It includes fixtures for:
 These are deliberate rather than hidden TODOs:
 
 - **Solana is the live chain in V1.** FomoScan EVM addresses are stored, but Base/BNB/Ethereum watchers/executors are the next chain adapters.
-- **OKX fallback is not enabled yet.** Non-zero Token-2022 transfer-fee mints are refused rather than risk an unsafe route.
+- **OKX fallback is opt-in.** Non-zero Token-2022 transfer-fee mints are refused unless `TOKEN_2022_FALLBACK_ENABLED=true` and OKX API credentials are configured. Test tiny buy/sell amounts before relying on it.
 - The live path is present, but per the supplied implementation spec you should run paper mode against real followed wallets before enabling it with real funds.
 - The Yellowstone protobuf normalizer is defensive, but should be verified against the exact Triton/provider payload you subscribe to before live trading.
 
@@ -180,6 +181,12 @@ TRITON_GRPC_XTOKEN=...
 SOLANA_RPC_URL=https://...
 HELIUS_API_KEY=...                  # optional, enables Trader Discovery early-buyer sourcing
 SOURCING_AUTO_DISCOVERY_ENABLED=true
+TOKEN_2022_FALLBACK_ENABLED=false   # set true only after OKX is configured and tested
+OKX_API_BASE=https://www.okx.com
+OKX_API_KEY=...
+OKX_API_SECRET=...
+OKX_API_PASSPHRASE=...
+OKX_PROJECT_ID=...
 ```
 
 If you run the backend directly on your machine while only Postgres is running in Docker, use localhost instead:
@@ -297,7 +304,7 @@ The dashboard includes a **Trader Discovery** section for automated wallet sourc
 DexScreener Solana discovery -> liquidity/volume/momentum filters -> early buyers -> candidate wallets -> priority score
 ```
 
-This feature is read-only. It stores candidate wallets and evidence, but it does not follow a wallet, enable live mode, or place trades automatically.
+The scanner itself is read-only. It stores candidate wallets and evidence, but it does not enable live mode or place trades automatically. From the UI, a user can explicitly paper-follow a selected candidate; live still requires the normal separate confirmation.
 
 To enable it, add a Helius API key:
 
@@ -317,7 +324,7 @@ SOURCING_MIN_PEAK_MULTIPLE=2
 
 Then restart the backend so the sourcing tables are migrated. The backend will scan automatically after startup and then on the configured interval. The web UI also has **Scan now** for immediate runs.
 
-Manual token input remains available for tokens you already know. Candidates are ranked higher when they appear early across multiple winning tokens.
+Manual token input remains available for tokens you already know. Candidates are ranked higher when they appear early across multiple winning tokens and then pass copy-worthiness analysis. The dashboard exposes two lanes: **Best disciplined wallets** for human-like fast traders, and **Best aggressive bots** for high-frequency wallets with repeat winner evidence and explicit risk labels.
 
 ## FomoScan credit usage
 
@@ -369,6 +376,6 @@ The pure detection fixtures should be expanded with **recorded real transactions
 2. Validate the protobuf normalizer against those real messages.
 3. Run Telegram alerts for several days with no execution.
 4. Paper-copy entries for at least a week and compare entry latency/fills with the manual workflow.
-5. Implement/test OKX fallback for Token-2022 transfer-fee tokens.
+5. Run tiny OKX fallback buy/sell tests for Token-2022 transfer-fee tokens before enabling normal live amounts.
 6. Enable the smallest tolerable live amount on one user + one trader.
 7. Add the EVM chain adapter (Base first), while keeping the same source/risk/position interfaces.
