@@ -62,3 +62,67 @@ function fakeRpc(input: { transferFeeBps: number }) {
     tokenDecimals: async () => 6,
   };
 }
+
+test("sell retries slippage failures with higher slippage", async () => {
+  const signer = Keypair.generate();
+  process.env.TRADING_WALLET_TEST_SOL_PRIVATE_KEY = bs58.encode(
+    signer.secretKey,
+  );
+  const rpc = fakeRpc({ transferFeeBps: 0 });
+  const slippages: number[] = [];
+  const jupiter = {
+    usesSwapV2: false,
+    quote: async (_inputMint: string, _outputMint: string, _amount: bigint, slippageBps: number) => {
+      slippages.push(slippageBps);
+      if (slippageBps < 1000) throw new Error("SLIPPAGE_TOLERANCE_EXCEEDED");
+      throw new Error("FINAL_TEST_ERROR");
+    },
+  };
+  const executor = new SolanaExecutor(rpc as any, jupiter as any, {} as any);
+
+  await assert.rejects(
+    () =>
+      executor.sell({
+        signerRef: "TEST_SOL",
+        expectedPublicAddress: signer.publicKey.toBase58(),
+        token: "TokenMint",
+        tokenQty: 1,
+        slippageBps: 300,
+        expectedUsd: 1,
+      }),
+    /FINAL_TEST_ERROR/,
+  );
+  assert.deepEqual(slippages, [300, 1000]);
+});
+
+test("sell retries pre-submit fetch failures with backoff", async () => {
+  const signer = Keypair.generate();
+  process.env.TRADING_WALLET_TEST_SOL_PRIVATE_KEY = bs58.encode(
+    signer.secretKey,
+  );
+  const rpc = fakeRpc({ transferFeeBps: 0 });
+  let attempts = 0;
+  const jupiter = {
+    usesSwapV2: false,
+    quote: async () => {
+      attempts += 1;
+      if (attempts < 3) throw new Error("fetch failed");
+      throw new Error("FINAL_TEST_ERROR");
+    },
+  };
+  const executor = new SolanaExecutor(rpc as any, jupiter as any, {} as any);
+
+  await assert.rejects(
+    () =>
+      executor.sell({
+        signerRef: "TEST_SOL",
+        expectedPublicAddress: signer.publicKey.toBase58(),
+        token: "TokenMint",
+        tokenQty: 1,
+        slippageBps: 300,
+        expectedUsd: 1,
+      }),
+    /FINAL_TEST_ERROR/,
+  );
+  assert.equal(attempts, 3);
+});

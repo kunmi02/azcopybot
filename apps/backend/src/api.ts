@@ -13,7 +13,7 @@ import type { TraderService } from "./services/traders.js";
 import type { PositionService } from "./services/positions.js";
 import type { DexScreenerPriceService } from "./services/pricing.js";
 import type { SolanaRpc } from "./chains/solana/rpc.js";
-import { SOLANA_USDC } from "./execution/solana.js";
+import { MIN_SOL_LAMPORTS, SOLANA_USDC } from "./execution/solana.js";
 import { loadSolanaSigner } from "./wallet.js";
 import type { ActivityService } from "./services/activity.js";
 import type { HealthService } from "./services/health.js";
@@ -147,7 +147,7 @@ export async function buildApi(
         walletReadiness.signer = false;
       }
       walletReadiness.solReserve =
-        solLamports != null && solLamports >= 50_000_000n;
+        solLamports != null && solLamports >= MIN_SOL_LAMPORTS;
       walletReadiness.usdcBalance = usdcRaw != null && usdcRaw > 0n;
     }
     return publicDashboard({
@@ -282,13 +282,17 @@ export async function buildApi(
         .status(400)
         .send({ error: "LEADER_SOLANA_WALLET_NOT_FOUND" });
     }
-    const result = await sourcing.walletTransactions({
-      wallet: wallet.address,
-      limit,
-      before,
-    });
+    const [result, copyExecutions] = await Promise.all([
+      sourcing.walletTransactions({
+        wallet: wallet.address,
+        limit,
+        before,
+      }),
+      db.listExecutionsForTrader(user.id, leader.trader_id, 200),
+    ]);
     return {
       leader: publicTrader(leader),
+      copyExecutions: copyExecutions.map(publicExecution),
       ...result,
     };
   });

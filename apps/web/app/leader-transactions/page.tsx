@@ -41,6 +41,20 @@ type LeaderTransaction = {
   }>;
 };
 
+type CopyExecution = {
+  id: string;
+  token: string;
+  side: "buy" | "sell";
+  reason: string;
+  requested_usd?: number | null;
+  actual_usd?: number | null;
+  token_qty?: string | number | null;
+  tx_hash?: string | null;
+  status: string;
+  created_at: string;
+  confirmed_at?: string | null;
+};
+
 type TransactionResponse = {
   leader: Leader;
   wallet: string;
@@ -49,6 +63,7 @@ type TransactionResponse = {
   before?: string | null;
   nextBefore?: string | null;
   transactions: LeaderTransaction[];
+  copyExecutions?: CopyExecution[];
 };
 
 async function request(path: string, init?: RequestInit) {
@@ -233,7 +248,12 @@ export default function LeaderTransactionsPage() {
         </div>
         <div className="txList">
           {result?.transactions.map((transaction) => (
-            <TransactionCard key={transaction.signature} tx={transaction} />
+            <TransactionCard
+              key={transaction.signature}
+              tx={transaction}
+              leaderWallet={result.wallet}
+              copyExecutions={result.copyExecutions ?? []}
+            />
           ))}
           {result && !result.transactions.length && (
             <div className="card muted">No transactions returned for this leader.</div>
@@ -263,7 +283,17 @@ export default function LeaderTransactionsPage() {
   );
 }
 
-function TransactionCard({ tx }: { tx: LeaderTransaction }) {
+function TransactionCard({
+  tx,
+  leaderWallet,
+  copyExecutions,
+}: {
+  tx: LeaderTransaction;
+  leaderWallet: string;
+  copyExecutions: CopyExecution[];
+}) {
+  const summary = leaderTransactionSummary(tx, leaderWallet);
+  const tokenHistory = copyHistoryForTokens(copyExecutions, summary.tokenMints);
   return (
     <article className="txCard">
       <div className="txCardHead">
@@ -274,6 +304,11 @@ function TransactionCard({ tx }: { tx: LeaderTransaction }) {
         <a href={`https://solscan.io/tx/${tx.signature}`} target="_blank" rel="noreferrer">
           Solscan
         </a>
+      </div>
+      <div className={`txLeaderAction ${summary.kind}`}>
+        <strong>{summary.title}</strong>
+        <span>{summary.detail}</span>
+        <small>{summary.quoteDetail}</small>
       </div>
       {tx.description && <p>{tx.description}</p>}
       <div className="txMetaGrid">
@@ -287,6 +322,7 @@ function TransactionCard({ tx }: { tx: LeaderTransaction }) {
           Fee payer <b className="mono">{tx.feePayer ? shortAddress(tx.feePayer) : "—"}</b>
         </span>
       </div>
+      <CopyHistory history={tokenHistory} />
       <details className="txTransfers">
         <summary>
           Transfers · {tx.tokenTransfers.length} token · {tx.nativeTransfers.length} SOL
@@ -321,6 +357,194 @@ function TransactionCard({ tx }: { tx: LeaderTransaction }) {
       </details>
     </article>
   );
+}
+
+
+const QUOTE_MINTS = new Set([
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  "So11111111111111111111111111111111111111112",
+]);
+
+type TxSummary = {
+  kind: "buy" | "sell" | "sent" | "received" | "other";
+  title: string;
+  detail: string;
+  quoteDetail: string;
+  tokenMints: string[];
+};
+
+function leaderTransactionSummary(tx: LeaderTransaction, leaderWallet: string): TxSummary {
+  const leaderTokens = tx.tokenTransfers.filter(
+    (transfer) =>
+      transfer.mint &&
+      !QUOTE_MINTS.has(transfer.mint) &&
+      (transfer.fromUserAccount === leaderWallet || transfer.toUserAccount === leaderWallet),
+  );
+  const tokenOut = leaderTokens.filter((transfer) => transfer.fromUserAccount === leaderWallet);
+  const tokenIn = leaderTokens.filter((transfer) => transfer.toUserAccount === leaderWallet);
+  const quoteOut = tx.tokenTransfers.filter(
+    (transfer) =>
+      transfer.mint &&
+      QUOTE_MINTS.has(transfer.mint) &&
+      transfer.fromUserAccount === leaderWallet,
+  );
+  const quoteIn = tx.tokenTransfers.filter(
+    (transfer) =>
+      transfer.mint &&
+      QUOTE_MINTS.has(transfer.mint) &&
+      transfer.toUserAccount === leaderWallet,
+  );
+  const solOut = sum(
+    tx.nativeTransfers
+      .filter((transfer) => transfer.fromUserAccount === leaderWallet)
+      .map((transfer) => transfer.amountSol),
+  );
+  const solIn = sum(
+    tx.nativeTransfers
+      .filter((transfer) => transfer.toUserAccount === leaderWallet)
+      .map((transfer) => transfer.amountSol),
+  );
+  const tokenMints = [...new Set(leaderTokens.map((transfer) => transfer.mint!).filter(Boolean))];
+  const primaryIn = largestTransfer(tokenIn);
+  const primaryOut = largestTransfer(tokenOut);
+  const quoteInAmount = sum(quoteIn.map((transfer) => transfer.tokenAmount));
+  const quoteOutAmount = sum(quoteOut.map((transfer) => transfer.tokenAmount));
+
+  if (primaryIn && (quoteOut.length || solOut > 0.01)) {
+    return {
+      kind: "buy",
+      title: "Leader bought token",
+      detail: `Bought ${formatAmount(primaryIn.tokenAmount)} of ${shortAddress(primaryIn.mint)}`,
+      quoteDetail: quoteOut.length
+        ? `Quote paid: ${formatAmount(quoteOutAmount)} quote token`
+        : `SOL out: ${formatAmount(solOut)} SOL`,
+      tokenMints,
+    };
+  }
+  if (primaryOut && (quoteIn.length || solIn > 0.01)) {
+    return {
+      kind: "sell",
+      title: "Leader sold token",
+      detail: `Sold ${formatAmount(primaryOut.tokenAmount)} of ${shortAddress(primaryOut.mint)}`,
+      quoteDetail: quoteIn.length
+        ? `Quote received: ${formatAmount(quoteInAmount)} quote token`
+        : `SOL in: ${formatAmount(solIn)} SOL`,
+      tokenMints,
+    };
+  }
+  if (primaryOut) {
+    return {
+      kind: "sent",
+      title: "Leader sent token",
+      detail: `Sent ${formatAmount(primaryOut.tokenAmount)} of ${shortAddress(primaryOut.mint)}`,
+      quoteDetail: `No quote token received here. SOL net: ${formatAmount(solIn - solOut)} SOL`,
+      tokenMints,
+    };
+  }
+  if (primaryIn) {
+    return {
+      kind: "received",
+      title: "Leader received token",
+      detail: `Received ${formatAmount(primaryIn.tokenAmount)} of ${shortAddress(primaryIn.mint)}`,
+      quoteDetail: `No quote token paid here. SOL net: ${formatAmount(solIn - solOut)} SOL`,
+      tokenMints,
+    };
+  }
+  return {
+    kind: "other",
+    title: "No leader token trade detected",
+    detail: "This transaction did not show the leader buying or selling a non-quote token.",
+    quoteDetail: `SOL net: ${formatAmount(solIn - solOut)} SOL`,
+    tokenMints,
+  };
+}
+
+function CopyHistory({ history }: { history: ReturnType<typeof copyHistoryForTokens> }) {
+  if (!history.length) return null;
+  return (
+    <div className="copyHistoryBox">
+      <h4>CopyBot history for token</h4>
+      {history.map((item) => (
+        <div className="copyHistoryItem" key={item.token}>
+          <div>
+            <b className="mono">{shortAddress(item.token)}</b>
+            <span>
+              Buys {item.buyConfirmed}/{item.buyTotal} confirmed · {item.finalSell ? `Failed sells before final sell ${item.sellFailuresBeforeFinal}` : `Sell failures ${item.sellFailures}`}
+              {item.stopLossTriggered ? " · stop loss triggered" : ""}
+            </span>
+          </div>
+          {item.finalSell ? (
+            <small>
+              Final sell: {executionStatusLabel(item.finalSell.status)} · {item.finalSell.reason}
+              {item.finalSell.actual_usd != null ? ` · $${Number(item.finalSell.actual_usd).toFixed(2)}` : ""}
+              {item.finalSell.tx_hash ? " · " : ""}
+              {item.finalSell.tx_hash && (
+                <a href={`https://solscan.io/tx/${item.finalSell.tx_hash}`} target="_blank" rel="noreferrer">
+                  Solscan
+                </a>
+              )}
+            </small>
+          ) : item.lastSell ? (
+            <small>
+              Last sell: {executionStatusLabel(item.lastSell.status)} · {item.lastSell.reason}
+            </small>
+          ) : (
+            <small>No sell execution recorded yet.</small>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function copyHistoryForTokens(executions: CopyExecution[], tokens: string[]) {
+  return tokens
+    .map((token) => {
+      const related = executions.filter((execution) => execution.token === token);
+      if (!related.length) return null;
+      const buys = related.filter((execution) => execution.side === "buy");
+      const sells = related.filter((execution) => execution.side === "sell");
+      const failedSells = sells.filter((execution) => execution.status.startsWith("failed:"));
+      const finalSell =
+        sells.find((execution) => execution.status === "confirmed" || execution.status === "paper") ?? null;
+      const lastSell = sells[0] ?? null;
+      const finalSellAt = finalSell ? new Date(finalSell.created_at).getTime() : null;
+      return {
+        token,
+        buyTotal: buys.length,
+        buyConfirmed: buys.filter((execution) => execution.status === "confirmed" || execution.status === "paper").length,
+        sellFailures: failedSells.length,
+        sellFailuresBeforeFinal:
+          finalSellAt == null
+            ? failedSells.length
+            : failedSells.filter(
+                (execution) => new Date(execution.created_at).getTime() <= finalSellAt,
+              ).length,
+        stopLossTriggered: sells.some((execution) => execution.reason.includes("STOP_LOSS")),
+        finalSell,
+        lastSell,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function largestTransfer<T extends { tokenAmount: number | null }>(transfers: T[]) {
+  return [...transfers].sort(
+    (a, b) => Number(b.tokenAmount ?? 0) - Number(a.tokenAmount ?? 0),
+  )[0];
+}
+
+function sum(values: Array<number | null>): number {
+  return values.reduce<number>((total, value) => total + (Number(value) || 0), 0);
+}
+
+function executionStatusLabel(status: string) {
+  if (status === "confirmed") return "confirmed";
+  if (status === "paper") return "paper";
+  if (status === "submitted_unknown") return "status unknown";
+  if (status.startsWith("failed:")) return "failed";
+  return status.replaceAll("_", " ");
 }
 
 function TransferLine({ children }: { children: ReactNode }) {

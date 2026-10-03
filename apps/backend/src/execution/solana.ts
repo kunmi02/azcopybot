@@ -7,7 +7,24 @@ import { VersionedTransaction } from "@solana/web3.js";
 import { loadSolanaSigner } from "../wallet.js";
 
 export const SOLANA_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const MIN_SOL_LAMPORTS = 50_000_000n; // 0.05 SOL
+export const MIN_SOL_LAMPORTS = 100_000_000n; // 0.1 SOL
+
+type ProgressFn = (
+  stage: string,
+  message: string,
+  metadata?: Record<string, unknown>,
+) => Promise<void> | void;
+
+type SellInput = {
+  signerRef: string;
+  expectedPublicAddress: string;
+  token: string;
+  tokenQty: number;
+  slippageBps: number;
+  expectedUsd: number;
+  bypassValueSanity?: boolean;
+  onProgress?: ProgressFn;
+};
 
 export class SolanaExecutor {
   constructor(
@@ -68,16 +85,7 @@ export class SolanaExecutor {
     });
   }
 
-  async sell(input: {
-    signerRef: string;
-    expectedPublicAddress: string;
-    token: string;
-    tokenQty: number;
-    slippageBps: number;
-    expectedUsd: number;
-    bypassValueSanity?: boolean;
-    onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
-  }) {
+  async sell(input: SellInput) {
     const signer = loadSolanaSigner(input.signerRef);
     if (signer.publicKey.toBase58() !== input.expectedPublicAddress) throw new Error("SIGNER_PUBLIC_KEY_MISMATCH");
     const solBalance = await this.rpc.solBalance(input.expectedPublicAddress);
@@ -87,6 +95,77 @@ export class SolanaExecutor {
     const onChainBalance = await this.rpc.tokenBalanceRaw(input.expectedPublicAddress, input.token);
     if (onChainBalance < rawQty) throw new Error("INSUFFICIENT_TOKEN_BALANCE");
 
+    return this.sellWithRetryPolicy(input, rawQty, signer);
+  }
+
+  private async sellWithRetryPolicy(
+    input: SellInput,
+    rawQty: bigint,
+    signer: import("@solana/web3.js").Keypair,
+  ) {
+    const slippageSteps = sellSlippageSteps(
+      input.slippageBps,
+      Boolean(input.bypassValueSanity),
+    );
+    let lastError: unknown;
+
+    for (let stepIndex = 0; stepIndex < slippageSteps.length; stepIndex++) {
+      const slippageBps = slippageSteps[stepIndex];
+      for (let networkAttempt = 0; networkAttempt < 3; networkAttempt++) {
+        let submissionStarted = false;
+        const onProgress: ProgressFn = async (stage, message, metadata) => {
+          if (stage === "transaction_submitting") submissionStarted = true;
+          await input.onProgress?.(stage, message, {
+            ...metadata,
+            slippageBps,
+            retryAttempt: networkAttempt + 1,
+          });
+        };
+
+        try {
+          return await this.sellOnce(
+            { ...input, slippageBps, onProgress },
+            rawQty,
+            signer,
+          );
+        } catch (error) {
+          lastError = error;
+          if (isProviderFetchFailure(error) && !submissionStarted && networkAttempt < 2) {
+            const delayMs = [500, 1500][networkAttempt];
+            await input.onProgress?.("provider_retry_scheduled", "Provider fetch failed before sell submission; retrying", {
+              token: input.token,
+              slippageBps,
+              attempt: networkAttempt + 2,
+              delayMs,
+              error: String(error),
+            });
+            await delay(delayMs);
+            continue;
+          }
+
+          if (isSlippageToleranceExceeded(error) && stepIndex < slippageSteps.length - 1) {
+            const nextSlippageBps = slippageSteps[stepIndex + 1];
+            await input.onProgress?.("slippage_retry_scheduled", "Sell slippage exceeded; retrying with higher slippage", {
+              token: input.token,
+              slippageBps,
+              nextSlippageBps,
+              error: String(error),
+            });
+            break;
+          }
+
+          throw error;
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  private async sellOnce(
+    input: SellInput,
+    rawQty: bigint,
+    signer: import("@solana/web3.js").Keypair,
+  ) {
     return this.withMissingTokenProgramRetry(async () => {
       await input.onProgress?.("quote_requested", "Jupiter sell quote requested", { token: input.token, tokenQty: input.tokenQty, expectedUsd: input.expectedUsd });
       const transferFeeBps = await this.rpc.transferFeeBps(input.token);
@@ -125,7 +204,7 @@ export class SolanaExecutor {
       token: string;
       amountUsd: number;
       slippageBps: number;
-      onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
+      onProgress?: ProgressFn;
     },
     inputAmount: bigint,
     transferFeeBps: number,
@@ -171,7 +250,7 @@ export class SolanaExecutor {
       slippageBps: number;
       expectedUsd: number;
       bypassValueSanity?: boolean;
-      onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
+      onProgress?: ProgressFn;
     },
     rawQty: bigint,
     transferFeeBps: number,
@@ -242,4 +321,48 @@ export class SolanaExecutor {
     }
     throw last;
   }
+}
+
+function sellSlippageSteps(baseSlippageBps: number, emergency: boolean) {
+  const max = emergency ? 5_000 : 2_500;
+  return uniqueAscending([
+    clampBps(baseSlippageBps),
+    Math.max(clampBps(baseSlippageBps), 1_000),
+    Math.max(clampBps(baseSlippageBps), emergency ? 3_000 : 1_500),
+    max,
+  ]).filter((value) => value <= max);
+}
+
+function uniqueAscending(values: number[]) {
+  return [...new Set(values)].sort((a, b) => a - b);
+}
+
+function clampBps(value: number) {
+  if (!Number.isFinite(value)) return 300;
+  return Math.max(1, Math.min(10_000, Math.round(value)));
+}
+
+function isSlippageToleranceExceeded(error: unknown) {
+  const message = String(error);
+  return (
+    message.includes("SLIPPAGE_TOLERANCE_EXCEEDED") ||
+    message.includes("SlippageToleranceExceeded") ||
+    (/slippage/i.test(message) && /exceed|tolerance/i.test(message))
+  );
+}
+
+function isProviderFetchFailure(error: unknown) {
+  const message = String(error);
+  return (
+    message.includes("fetch failed") ||
+    message.includes("UND_ERR") ||
+    message.includes("ECONNRESET") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("ENOTFOUND") ||
+    message.includes("EAI_AGAIN")
+  );
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

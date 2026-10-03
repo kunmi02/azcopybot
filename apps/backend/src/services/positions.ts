@@ -21,7 +21,7 @@ export class PositionService {
     percentage: number,
     reason: string,
     options: { bypassValueSanity?: boolean } = {},
-  ) {
+  ): Promise<void> {
     if (![25, 50, 75, 100].includes(percentage))
       throw new Error("INVALID_EXIT_PERCENTAGE");
     const position = await this.db.getPositionForUser(userId, positionId);
@@ -203,11 +203,52 @@ export class PositionService {
           percentage,
           reason,
           error: failureReason,
+          bypassValueSanity: Boolean(options.bypassValueSanity),
         },
       });
+
+      const failedSellAttempts = await this.db.countFailedSellExecutions(
+        positionId,
+        position.token,
+      );
+      const shouldAutoEmergencySell =
+        !options.bypassValueSanity &&
+        failedSellAttempts >= 2 &&
+        failureReason.includes("VALUE_SANITY_CHECK_FAILED");
+
+      if (shouldAutoEmergencySell) {
+        await this.activity.emit({
+          userId,
+          traderId: position.trader_id,
+          positionId,
+          executionId,
+          type: "auto_emergency_sell_triggered",
+          severity: "warning",
+          message: `Sell failed ${failedSellAttempts} times for ${market.symbol ?? position.token}. Trying emergency sell anyway.`,
+          metadata: {
+            token: position.token,
+            percentage,
+            reason,
+            failedSellAttempts,
+            originalExecutionId: executionId,
+          },
+        });
+        await this.notify(
+          position.telegram_chat_id,
+          `🚨 EXIT FAILED ${failedSellAttempts} TIMES — TRYING SELL ANYWAY\n${market.symbol ?? position.token}\nReason: ${failureReason}\nCopyBot is now submitting an emergency exit that bypasses the value sanity check.`,
+        );
+        return this.exit(
+          userId,
+          positionId,
+          percentage,
+          `${reason}_AUTO_EMERGENCY`,
+          { bypassValueSanity: true },
+        );
+      }
+
       await this.notify(
         position.telegram_chat_id,
-        `🚨 EXIT FAILED — POSITION STILL OPEN\n${market.symbol ?? position.token}\nReason: ${failureReason}\nUse the dashboard to retry or inspect before submitting again.`,
+        `🚨 EXIT FAILED — POSITION STILL OPEN\n${market.symbol ?? position.token}\nReason: ${failureReason}\n${failureReason.includes("VALUE_SANITY_CHECK_FAILED") ? `Failed sell attempts: ${failedSellAttempts}/2 before automatic sell-anyway.` : "Use the dashboard to retry or inspect before submitting again."}`,
         [
           [
             {

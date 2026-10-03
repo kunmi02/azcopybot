@@ -1098,6 +1098,22 @@ export class Database {
     );
   }
 
+  async countFailedSellExecutions(positionId: string, token: string) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM executions
+      WHERE position_id=$1
+        AND token=$2
+        AND side='sell'
+        AND status LIKE 'failed:%VALUE_SANITY_CHECK_FAILED%'
+        AND reason NOT LIKE '%AUTO_EMERGENCY%'
+    `,
+      [positionId, token],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async getExecutionForUser(userId: string, id: string) {
     const { rows } = await this.pool.query(
       `
@@ -1109,6 +1125,19 @@ export class Database {
       [userId, id],
     );
     return rows[0] ?? null;
+  }
+
+  async listExecutionsForTrader(userId: string, traderId: string, limit = 200) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT e.*, t.handle,t.display_name FROM executions e
+      LEFT JOIN traders t ON t.id=e.trader_id
+      WHERE e.user_id=$1 AND e.trader_id=$2
+      ORDER BY e.created_at DESC LIMIT $3
+    `,
+      [userId, traderId, limit],
+    );
+    return rows;
   }
 
   async listExecutions(userId: string, limit = 100) {
