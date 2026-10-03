@@ -158,6 +158,56 @@ export async function buildApi(
     });
   });
 
+  app.get("/api/auto-trading/config", async (req) => {
+    const user = await requireUser(req, db);
+    const [autoConfig, readiness] = await Promise.all([
+      db.getAutoTradingConfig(user.id),
+      autoTradingReadiness(config, db, rpc, user.id),
+    ]);
+    return {
+      config: publicAutoTradingConfig(autoConfig),
+      readiness,
+      status: {
+        autoEntryEngine: "settings_only",
+        openAutoPositions: 0,
+        dailyAutoBuys: 0,
+        dailyRealizedPnlUsd: 0,
+      },
+    };
+  });
+
+  app.patch("/api/auto-trading/config", async (req, reply) => {
+    const user = await requireUser(req, db);
+    const body = req.body as any;
+    const patch = normalizeAutoTradingPatch(body);
+    if (patch.enabledLive === true) {
+      if (body?.confirmLiveAuto !== true) {
+        return reply
+          .status(400)
+          .send({ error: "AUTO_LIVE_REQUIRES_EXPLICIT_CONFIRMATION" });
+      }
+      const readiness = await autoTradingReadiness(config, db, rpc, user.id);
+      if (!readiness.ready) {
+        return reply.status(400).send({
+          error: `AUTO_LIVE_NOT_READY:${readiness.missing.join(",")}`,
+          readiness,
+        });
+      }
+    }
+    const autoConfig = await db.updateAutoTradingConfig(user.id, patch);
+    await activity.emit({
+      userId: user.id,
+      type: "auto_trading_config_updated",
+      severity: patch.enabledLive ? "warning" : "info",
+      message: `Autonomous live trading ${autoConfig.enabled_live ? "enabled" : "disabled"}.`,
+      metadata: { config: publicAutoTradingConfig(autoConfig) },
+    });
+    return {
+      config: publicAutoTradingConfig(autoConfig),
+      readiness: await autoTradingReadiness(config, db, rpc, user.id),
+    };
+  });
+
   app.get("/api/activity", async (req) => {
     const user = await requireUser(req, db);
     const limit = Number((req.query as any)?.limit ?? 100);
@@ -573,6 +623,120 @@ function shouldUseSecureCookies(config: AppConfig) {
     config.NODE_ENV === "production" &&
     config.PUBLIC_APP_URL.startsWith("https://")
   );
+}
+
+async function autoTradingReadiness(
+  config: AppConfig,
+  db: Database,
+  rpc: SolanaRpc,
+  userId: string,
+) {
+  const missing: string[] = [];
+  const wallet = await db.getCopyWallet(userId, "solana");
+  let sol: number | null = null;
+  let usdc: number | null = null;
+  let signer = false;
+  if (!wallet) {
+    missing.push("copy_wallet");
+  } else {
+    try {
+      const keypair = loadSolanaSigner(wallet.signer_ref);
+      signer = keypair.publicKey.toBase58() === wallet.public_address;
+      if (!signer) missing.push("signer");
+    } catch {
+      missing.push("signer");
+    }
+    const [solLamports, usdcRaw] = await Promise.all([
+      rpc.solBalance(wallet.public_address).catch(() => null),
+      rpc.tokenBalanceRaw(wallet.public_address, SOLANA_USDC).catch(() => null),
+    ]);
+    sol = solLamports == null ? null : Number(solLamports) / 1e9;
+    usdc = usdcRaw == null ? null : Number(usdcRaw) / 1e6;
+    if (solLamports == null || solLamports < MIN_SOL_LAMPORTS)
+      missing.push("sol_reserve");
+    if (usdcRaw == null || usdcRaw <= 0n) missing.push("usdc_balance");
+  }
+  if (!config.JUPITER_API_KEY) missing.push("jupiter");
+  return {
+    ready: missing.length === 0,
+    missing,
+    copyWallet: Boolean(wallet),
+    signer,
+    jupiter: Boolean(config.JUPITER_API_KEY),
+    solReserve: sol != null && sol >= Number(MIN_SOL_LAMPORTS) / 1e9,
+    usdcBalance: usdc != null && usdc > 0,
+    balances: { sol, usdc },
+  };
+}
+
+function normalizeAutoTradingPatch(body: any) {
+  const patch: Record<string, unknown> = {};
+  if ("enabledLive" in body) patch.enabledLive = Boolean(body.enabledLive);
+  const numberFields: Record<string, { min: number; max: number; nullable?: boolean }> = {
+    tradeAmountUsd: { min: 0.1, max: 1000 },
+    maxOpenPositions: { min: 1, max: 50 },
+    maxDailyBuys: { min: 1, max: 200 },
+    dailyLossLimitUsd: { min: 0.1, max: 10000 },
+    maxTokenRiskScore: { min: 0, max: 100 },
+    minLiquidityUsd: { min: 0, max: 10_000_000 },
+    minMarketCapUsd: { min: 0, max: 1_000_000_000 },
+    maxMarketCapUsd: { min: 0, max: 1_000_000_000 },
+    takeProfitPct: { min: 0, max: 10_000, nullable: true },
+    stopLossPct: { min: 0, max: 100, nullable: true },
+    maxHoldSeconds: { min: 60, max: 30 * 24 * 60 * 60, nullable: true },
+    minHoldSeconds: { min: 0, max: 30 * 24 * 60 * 60 },
+    tp1Pct: { min: 0, max: 10_000, nullable: true },
+    tp1SellPct: { min: 0, max: 100 },
+    tp2Pct: { min: 0, max: 10_000, nullable: true },
+    tp2SellPct: { min: 0, max: 100 },
+    tp3Pct: { min: 0, max: 10_000, nullable: true },
+    tp3SellPct: { min: 0, max: 100 },
+    runnerPct: { min: 0, max: 100 },
+    breakevenTriggerPct: { min: 0, max: 10_000, nullable: true },
+    trailingTriggerPct: { min: 0, max: 10_000, nullable: true },
+    trailingDistancePct: { min: 0, max: 100, nullable: true },
+  };
+  for (const [field, limits] of Object.entries(numberFields)) {
+    if (!(field in body)) continue;
+    const value = body[field];
+    if (limits.nullable && (value === null || value === "" || value === "off")) {
+      patch[field] = null;
+      continue;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) continue;
+    patch[field] = Math.max(limits.min, Math.min(limits.max, numeric));
+  }
+  return patch;
+}
+
+function publicAutoTradingConfig(row: any) {
+  return {
+    enabledLive: Boolean(row.enabled_live),
+    tradeAmountUsd: Number(row.trade_amount_usd ?? 1),
+    maxOpenPositions: Number(row.max_open_positions ?? 1),
+    maxDailyBuys: Number(row.max_daily_buys ?? 3),
+    dailyLossLimitUsd: Number(row.daily_loss_limit_usd ?? 5),
+    maxTokenRiskScore: Number(row.max_token_risk_score ?? 30),
+    minLiquidityUsd: Number(row.min_liquidity_usd ?? 10000),
+    minMarketCapUsd: Number(row.min_market_cap_usd ?? 7000),
+    maxMarketCapUsd: Number(row.max_market_cap_usd ?? 40000),
+    takeProfitPct: row.take_profit_pct == null ? null : Number(row.take_profit_pct),
+    stopLossPct: row.stop_loss_pct == null ? null : Number(row.stop_loss_pct),
+    maxHoldSeconds: row.max_hold_seconds == null ? null : Number(row.max_hold_seconds),
+    minHoldSeconds: Number(row.min_hold_seconds ?? 0),
+    tp1Pct: row.tp1_pct == null ? null : Number(row.tp1_pct),
+    tp1SellPct: Number(row.tp1_sell_pct ?? 50),
+    tp2Pct: row.tp2_pct == null ? null : Number(row.tp2_pct),
+    tp2SellPct: Number(row.tp2_sell_pct ?? 25),
+    tp3Pct: row.tp3_pct == null ? null : Number(row.tp3_pct),
+    tp3SellPct: Number(row.tp3_sell_pct ?? 25),
+    runnerPct: Number(row.runner_pct ?? 0),
+    breakevenTriggerPct: row.breakeven_trigger_pct == null ? null : Number(row.breakeven_trigger_pct),
+    trailingTriggerPct: row.trailing_trigger_pct == null ? null : Number(row.trailing_trigger_pct),
+    trailingDistancePct: row.trailing_distance_pct == null ? null : Number(row.trailing_distance_pct),
+    updatedAt: row.updated_at,
+  };
 }
 
 function publicDashboard(dashboard: any) {

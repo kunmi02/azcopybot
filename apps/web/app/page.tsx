@@ -883,6 +883,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         <a href="#discovery">Discovery</a>
         <a href="#leaders">Leaders</a>
         <a href="/leader-transactions">Leader txs</a>
+        <a href="/auto-trading">Auto trading</a>
       </nav>
 
       {message && <div className="notice">{message}</div>}

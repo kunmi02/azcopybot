@@ -127,6 +127,35 @@ export class Database {
         UNIQUE(user_id, trader_id)
       );
 
+      CREATE TABLE IF NOT EXISTS auto_trading_configs (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        enabled_live BOOLEAN NOT NULL DEFAULT false,
+        trade_amount_usd DOUBLE PRECISION NOT NULL DEFAULT 1,
+        max_open_positions INTEGER NOT NULL DEFAULT 1,
+        max_daily_buys INTEGER NOT NULL DEFAULT 3,
+        daily_loss_limit_usd DOUBLE PRECISION NOT NULL DEFAULT 5,
+        max_token_risk_score INTEGER NOT NULL DEFAULT 30,
+        min_liquidity_usd DOUBLE PRECISION NOT NULL DEFAULT 10000,
+        min_market_cap_usd DOUBLE PRECISION NOT NULL DEFAULT 7000,
+        max_market_cap_usd DOUBLE PRECISION NOT NULL DEFAULT 40000,
+        take_profit_pct DOUBLE PRECISION DEFAULT 50,
+        stop_loss_pct DOUBLE PRECISION DEFAULT 15,
+        max_hold_seconds INTEGER DEFAULT 14400,
+        min_hold_seconds INTEGER DEFAULT 0,
+        tp1_pct DOUBLE PRECISION DEFAULT 100,
+        tp1_sell_pct DOUBLE PRECISION DEFAULT 50,
+        tp2_pct DOUBLE PRECISION DEFAULT 200,
+        tp2_sell_pct DOUBLE PRECISION DEFAULT 25,
+        tp3_pct DOUBLE PRECISION DEFAULT 400,
+        tp3_sell_pct DOUBLE PRECISION DEFAULT 25,
+        runner_pct DOUBLE PRECISION DEFAULT 0,
+        breakeven_trigger_pct DOUBLE PRECISION DEFAULT 50,
+        trailing_trigger_pct DOUBLE PRECISION DEFAULT 100,
+        trailing_distance_pct DOUBLE PRECISION DEFAULT 30,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
       CREATE TABLE IF NOT EXISTS seen_trades (
         key TEXT PRIMARY KEY,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -313,6 +342,39 @@ export class Database {
     );
     await this.pool.query(
       `ALTER TABLE copy_configs ALTER COLUMN trade_amount_usd SET DEFAULT 1`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS min_hold_seconds INTEGER DEFAULT 0`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS tp1_pct DOUBLE PRECISION DEFAULT 100`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS tp1_sell_pct DOUBLE PRECISION DEFAULT 50`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS tp2_pct DOUBLE PRECISION DEFAULT 200`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS tp2_sell_pct DOUBLE PRECISION DEFAULT 25`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS tp3_pct DOUBLE PRECISION DEFAULT 400`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS tp3_sell_pct DOUBLE PRECISION DEFAULT 25`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS runner_pct DOUBLE PRECISION DEFAULT 0`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS breakeven_trigger_pct DOUBLE PRECISION DEFAULT 50`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS trailing_trigger_pct DOUBLE PRECISION DEFAULT 100`,
+    );
+    await this.pool.query(
+      `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS trailing_distance_pct DOUBLE PRECISION DEFAULT 30`,
     );
   }
 
@@ -584,6 +646,61 @@ export class Database {
       [id, userId, traderId, wallet?.id ?? null],
     );
     return this.getCopyConfig(id);
+  }
+
+  async getAutoTradingConfig(userId: string) {
+    await this.pool.query(
+      `INSERT INTO auto_trading_configs(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING`,
+      [userId],
+    );
+    const { rows } = await this.pool.query(
+      `SELECT * FROM auto_trading_configs WHERE user_id=$1`,
+      [userId],
+    );
+    return rows[0];
+  }
+
+  async updateAutoTradingConfig(userId: string, patch: Record<string, unknown>) {
+    await this.getAutoTradingConfig(userId);
+    const columns: Record<string, string> = {
+      enabledLive: "enabled_live",
+      tradeAmountUsd: "trade_amount_usd",
+      maxOpenPositions: "max_open_positions",
+      maxDailyBuys: "max_daily_buys",
+      dailyLossLimitUsd: "daily_loss_limit_usd",
+      maxTokenRiskScore: "max_token_risk_score",
+      minLiquidityUsd: "min_liquidity_usd",
+      minMarketCapUsd: "min_market_cap_usd",
+      maxMarketCapUsd: "max_market_cap_usd",
+      takeProfitPct: "take_profit_pct",
+      stopLossPct: "stop_loss_pct",
+      maxHoldSeconds: "max_hold_seconds",
+      minHoldSeconds: "min_hold_seconds",
+      tp1Pct: "tp1_pct",
+      tp1SellPct: "tp1_sell_pct",
+      tp2Pct: "tp2_pct",
+      tp2SellPct: "tp2_sell_pct",
+      tp3Pct: "tp3_pct",
+      tp3SellPct: "tp3_sell_pct",
+      runnerPct: "runner_pct",
+      breakevenTriggerPct: "breakeven_trigger_pct",
+      trailingTriggerPct: "trailing_trigger_pct",
+      trailingDistancePct: "trailing_distance_pct",
+    };
+    const sets: string[] = [];
+    const values: unknown[] = [userId];
+    for (const [key, column] of Object.entries(columns)) {
+      if (!(key in patch)) continue;
+      values.push(patch[key]);
+      sets.push(`${column}=$${values.length}`);
+    }
+    if (sets.length) {
+      await this.pool.query(
+        `UPDATE auto_trading_configs SET ${sets.join(",")}, updated_at=now() WHERE user_id=$1`,
+        values,
+      );
+    }
+    return this.getAutoTradingConfig(userId);
   }
 
   async getCopyConfig(id: string): Promise<CopyConfig | null> {
