@@ -170,7 +170,16 @@ const reconcileTimer = setInterval(() => {
 reconcileTimer.unref();
 
 async function runSourcingScan() {
-  if (!config.SOURCING_AUTO_DISCOVERY_ENABLED || !config.HELIUS_API_KEY) return;
+  const runtimeEnabled = await db.getBooleanSystemSetting(
+    "sourcing_auto_discovery_enabled",
+    config.SOURCING_AUTO_DISCOVERY_ENABLED,
+  );
+  if (
+    !config.SOURCING_AUTO_DISCOVERY_ENABLED ||
+    !runtimeEnabled ||
+    !config.HELIUS_API_KEY
+  )
+    return;
   const result = await sourcing.scanTrendingTokens(sourcingScanOptions);
   console.log("sourcing_scan_completed", {
     scanned: result.scanned,

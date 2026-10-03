@@ -165,6 +165,14 @@ export default function Home() {
     candidates: any[];
     winningTokens: any[];
     stats?: any;
+    scanner?: {
+      runtimeEnabled: boolean;
+      envEnabled: boolean;
+      heliusConfigured: boolean;
+      effectiveEnabled: boolean;
+      intervalMs: number;
+      maxTokens: number;
+    };
   } | null>(null);
   const [bestWallets, setBestWallets] = useState<any[] | null>(null);
   const [bestWalletKind, setBestWalletKind] = useState<"disciplined" | "aggressive">("disciplined");
@@ -292,6 +300,28 @@ export default function Home() {
       );
       setDiscoveryMint("");
       await loadSourcing();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleDiscoveryScanner(enabled: boolean) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request("/api/sourcing/scanner", token, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      });
+      setSourcing((current) =>
+        current ? { ...current, scanner: result.scanner } : current,
+      );
+      setMessage(
+        `Trader discovery auto-scan ${enabled ? "enabled" : "disabled"}.`,
+      );
+      await loadActivity();
     } catch (e) {
       setMessage(String(e));
     } finally {
@@ -1121,14 +1151,39 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               : "automated early-buyer sourcing"}
           </span>
         </div>
-        <div className="leaderPanelHead">
+        <div className="leaderPanelHead discoveryScannerHead">
           <div>
-            <b>Automatic scanner</b>
+            <div className="scannerTitleRow">
+              <b>Automatic scanner</b>
+              <span
+                className={`badge ${sourcing?.scanner?.effectiveEnabled ? "live" : "paper"}`}
+              >
+                {sourcing?.scanner?.effectiveEnabled ? "auto on" : "auto off"}
+              </span>
+            </div>
             <p className="muted compactText">
               Scans DexScreener Solana profiles/boosts, filters for liquidity,
               volume, transactions and momentum, then extracts early buyers.
+              {sourcing?.scanner
+                ? ` Interval ${Math.round(sourcing.scanner.intervalMs / 60000)}m · max ${sourcing.scanner.maxTokens} tokens/run.`
+                : ""}
             </p>
+            {sourcing?.scanner &&
+              (!sourcing.scanner.envEnabled || !sourcing.scanner.heliusConfigured) && (
+                <p className="muted compactText">
+                  Auto-scan cannot run until env is enabled and Helius is configured.
+                </p>
+              )}
           </div>
+          <button
+            className={sourcing?.scanner?.runtimeEnabled ? "danger" : "secondary"}
+            disabled={busy || !sourcing?.scanner}
+            onClick={() =>
+              void toggleDiscoveryScanner(!sourcing?.scanner?.runtimeEnabled)
+            }
+          >
+            {sourcing?.scanner?.runtimeEnabled ? "Kill auto scan" : "Enable auto scan"}
+          </button>
           <button disabled={busy} onClick={scanDiscovery}>
             Scan now
           </button>

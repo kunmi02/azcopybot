@@ -20,6 +20,27 @@ export class Database {
     await this.pool.end();
   }
 
+  async getBooleanSystemSetting(key: string, fallback: boolean) {
+    const { rows } = await this.pool.query(
+      `SELECT value FROM system_settings WHERE key=$1`,
+      [key],
+    );
+    const value = rows[0]?.value;
+    return typeof value === "boolean" ? value : fallback;
+  }
+
+  async setBooleanSystemSetting(key: string, value: boolean) {
+    await this.pool.query(
+      `
+      INSERT INTO system_settings(key,value,updated_at)
+      VALUES($1,$2::jsonb,now())
+      ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()
+    `,
+      [key, JSON.stringify(value)],
+    );
+    return value;
+  }
+
   async migrate() {
     await this.pool.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -43,6 +64,12 @@ export class Database {
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
       CREATE TABLE IF NOT EXISTS traders (

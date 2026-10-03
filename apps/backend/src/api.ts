@@ -200,7 +200,33 @@ export async function buildApi(
 
   app.get("/api/sourcing/feed", async (req) => {
     await requireUser(req, db);
-    return sourcing.feed();
+    const [feed, runtimeEnabled] = await Promise.all([
+      sourcing.feed(),
+      db.getBooleanSystemSetting(
+        "sourcing_auto_discovery_enabled",
+        config.SOURCING_AUTO_DISCOVERY_ENABLED,
+      ),
+    ]);
+    return {
+      ...feed,
+      scanner: sourcingScannerStatus(config, runtimeEnabled),
+    };
+  });
+
+  app.patch("/api/sourcing/scanner", async (req) => {
+    const user = await requireUser(req, db);
+    const enabled = Boolean((req.body as any)?.enabled);
+    await db.setBooleanSystemSetting("sourcing_auto_discovery_enabled", enabled);
+    await activity.emit({
+      userId: user.id,
+      type: enabled
+        ? "sourcing_scanner_enabled"
+        : "sourcing_scanner_disabled",
+      severity: enabled ? "warning" : "info",
+      message: `Trader discovery auto-scan ${enabled ? "enabled" : "disabled"}.`,
+      metadata: { enabled },
+    });
+    return { scanner: sourcingScannerStatus(config, enabled) };
   });
 
   app.post("/api/sourcing/candidates/best", async (req) => {
@@ -488,6 +514,20 @@ export async function buildApi(
 
 async function requireUserFromHeaderOrQuery(request: any, db: Database) {
   return requireUser(request, db);
+}
+
+function sourcingScannerStatus(config: AppConfig, runtimeEnabled: boolean) {
+  return {
+    runtimeEnabled,
+    envEnabled: Boolean(config.SOURCING_AUTO_DISCOVERY_ENABLED),
+    heliusConfigured: Boolean(config.HELIUS_API_KEY),
+    effectiveEnabled:
+      Boolean(config.SOURCING_AUTO_DISCOVERY_ENABLED) &&
+      runtimeEnabled &&
+      Boolean(config.HELIUS_API_KEY),
+    intervalMs: config.SOURCING_SCAN_INTERVAL_MS,
+    maxTokens: config.SOURCING_SCAN_MAX_TOKENS,
+  };
 }
 
 function fomoScanHttpError(error: unknown) {
