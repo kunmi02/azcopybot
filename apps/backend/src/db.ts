@@ -86,7 +86,7 @@ export class Database {
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         trader_id TEXT NOT NULL REFERENCES traders(id) ON DELETE CASCADE,
         trading_wallet_id TEXT REFERENCES copy_wallets(id) ON DELETE SET NULL,
-        trade_amount_usd DOUBLE PRECISION NOT NULL DEFAULT 10,
+        trade_amount_usd DOUBLE PRECISION NOT NULL DEFAULT 1,
         slippage_bps INTEGER NOT NULL DEFAULT 300,
         copy_new_entries BOOLEAN NOT NULL DEFAULT true,
         copy_topups BOOLEAN NOT NULL DEFAULT false,
@@ -283,6 +283,9 @@ export class Database {
     `);
     await this.pool.query(
       `ALTER TABLE copy_configs ALTER COLUMN mirror_exits SET DEFAULT true`,
+    );
+    await this.pool.query(
+      `ALTER TABLE copy_configs ALTER COLUMN trade_amount_usd SET DEFAULT 1`,
     );
   }
 
@@ -1029,9 +1032,14 @@ export class Database {
     const id = randomUUID();
     const { rows } = await this.pool.query(
       `
-      INSERT INTO activity_events(id,user_id,trader_id,position_id,execution_id,type,severity,message,metadata)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
-      RETURNING *
+      WITH inserted AS (
+        INSERT INTO activity_events(id,user_id,trader_id,position_id,execution_id,type,severity,message,metadata)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+        RETURNING *
+      )
+      SELECT inserted.*, t.handle, t.display_name
+      FROM inserted
+      LEFT JOIN traders t ON t.id=inserted.trader_id
     `,
       [
         id,

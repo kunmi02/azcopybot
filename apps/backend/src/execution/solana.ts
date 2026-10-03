@@ -75,6 +75,7 @@ export class SolanaExecutor {
     tokenQty: number;
     slippageBps: number;
     expectedUsd: number;
+    bypassValueSanity?: boolean;
     onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
   }) {
     const signer = loadSolanaSigner(input.signerRef);
@@ -96,7 +97,7 @@ export class SolanaExecutor {
         const order = await this.jupiter.order(input.token, SOLANA_USDC, rawQty, input.slippageBps, input.expectedPublicAddress);
         await input.onProgress?.("quote_received", "Jupiter sell order received", { token: input.token, outAmount: order.outAmount, router: order.router, mode: order.mode, transferFeeBps });
         const quotedUsd = Number(BigInt(order.outAmount)) / 1_000_000;
-        if (input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
+        if (!input.bypassValueSanity && input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
         await input.onProgress?.("transaction_submitting", "Signing and executing sell transaction", { token: input.token, router: order.router });
         const result = await this.signAndExecuteOrder(order.transaction!, order.requestId, signer);
         const actualUsd = Number(BigInt(result.totalOutputAmount ?? result.outputAmountResult ?? order.outAmount)) / 1_000_000;
@@ -109,7 +110,7 @@ export class SolanaExecutor {
       await input.onProgress?.("quote_received", "Jupiter sell quote received", { token: input.token, outAmount: quote.outAmount, transferFeeBps });
 
       const quotedUsd = Number(BigInt(quote.outAmount)) / 1_000_000;
-      if (input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
+      if (!input.bypassValueSanity && input.expectedUsd > 1 && quotedUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
       const swap = await this.jupiter.buildSwap(quote, input.expectedPublicAddress);
       await input.onProgress?.("transaction_submitting", "Signing and submitting sell transaction", { token: input.token });
       const txHash = await submitSignedTransaction(this.rpc, swap, signer);
@@ -169,6 +170,7 @@ export class SolanaExecutor {
       tokenQty: number;
       slippageBps: number;
       expectedUsd: number;
+      bypassValueSanity?: boolean;
       onProgress?: (stage: string, message: string, metadata?: Record<string, unknown>) => Promise<void> | void;
     },
     rawQty: bigint,
@@ -195,7 +197,7 @@ export class SolanaExecutor {
       router: "okx",
     });
     const actualUsd = Number(BigInt(route.outAmount)) / 1_000_000;
-    if (input.expectedUsd > 1 && actualUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
+    if (!input.bypassValueSanity && input.expectedUsd > 1 && actualUsd < input.expectedUsd * 0.5) throw new Error("VALUE_SANITY_CHECK_FAILED");
     await input.onProgress?.("transaction_submitting", "Signing and submitting OKX fallback sell transaction", {
       token: input.token,
       router: "okx",

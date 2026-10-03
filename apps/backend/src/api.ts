@@ -257,6 +257,42 @@ export async function buildApi(
     });
   });
 
+  app.get("/api/leaders/:configId/transactions", async (req, reply) => {
+    const user = await requireUser(req, db);
+    const configId = String((req.params as any).configId ?? "");
+    const limit = Math.max(
+      10,
+      Math.min(100, Number((req.query as any)?.limit ?? 50) || 50),
+    );
+    const before =
+      (req.query as any)?.before == null || (req.query as any).before === ""
+        ? null
+        : String((req.query as any).before);
+    const [active, inactive] = await Promise.all([
+      db.listUserTraders(user.id),
+      db.listInactiveUserTraders(user.id),
+    ]);
+    const leader = [...active, ...inactive].find(
+      (row: any) => String(row.config_id) === configId,
+    );
+    if (!leader) return reply.status(404).send({ error: "LEADER_NOT_FOUND" });
+    const wallet = solanaWalletForLeader(leader);
+    if (!wallet) {
+      return reply
+        .status(400)
+        .send({ error: "LEADER_SOLANA_WALLET_NOT_FOUND" });
+    }
+    const result = await sourcing.walletTransactions({
+      wallet: wallet.address,
+      limit,
+      before,
+    });
+    return {
+      leader: publicTrader(leader),
+      ...result,
+    };
+  });
+
   app.get("/api/system-health", async (req) => {
     await requireUser(req, db);
     const rpcStarted = Date.now();
@@ -415,6 +451,22 @@ export async function buildApi(
     return { ok: true };
   });
 
+  app.post("/api/positions/:id/emergency-exit", async (req, reply) => {
+    const user = await requireUser(req, db);
+    const id = (req.params as any).id as string;
+    const body = req.body as any;
+    const percentage = Number(body?.percentage ?? 100);
+    if (body?.confirmEmergency !== true) {
+      return reply.status(400).send({
+        error: "EMERGENCY_EXIT_REQUIRES_EXPLICIT_CONFIRMATION",
+      });
+    }
+    await positions.exit(user.id, id, percentage, "EMERGENCY_EXIT", {
+      bypassValueSanity: true,
+    });
+    return { ok: true };
+  });
+
   app.post("/api/trading/pause", async (req) => {
     const user = await requireUser(req, db);
     await db.setUserPaused(user.id, true);
@@ -534,6 +586,14 @@ function publicTrader(trader: any) {
     enabled: trader.enabled,
     created_at: trader.created_at,
   };
+}
+
+function solanaWalletForLeader(leader: any) {
+  const wallets = Array.isArray(leader?.wallets) ? leader.wallets : [];
+  return (
+    wallets.find((wallet: any) => wallet?.chain === "solana" && wallet?.address) ??
+    null
+  );
 }
 
 function publicPosition(position: any) {

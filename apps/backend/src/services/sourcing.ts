@@ -7,6 +7,7 @@ import type {
   EarlyBuyerSource,
   WalletSwap,
   WalletSwapActivitySource,
+  WalletTransactionSource,
 } from "../sources/helius.js";
 import { PublicKey } from "@solana/web3.js";
 
@@ -28,7 +29,7 @@ export class SourcingService {
   constructor(
     private readonly db: Database,
     private readonly prices: DexScreenerPriceService,
-    private readonly earlyBuyers: EarlyBuyerSource & WalletSwapActivitySource,
+    private readonly earlyBuyers: EarlyBuyerSource & WalletSwapActivitySource & WalletTransactionSource,
   ) {}
 
   async discoverWinningToken(input: {
@@ -273,6 +274,41 @@ export class SourcingService {
         source_types: ["MANUAL_WALLET_ANALYSIS"],
       }),
       analysis: result.analysis,
+    };
+  }
+
+  async walletTransactions(input: {
+    wallet: string;
+    limit?: number;
+    before?: string | null;
+  }) {
+    const wallet = input.wallet.trim();
+    try {
+      new PublicKey(wallet);
+    } catch {
+      throw Object.assign(new Error("INVALID_SOLANA_WALLET"), {
+        statusCode: 400,
+      });
+    }
+    const limit = Math.max(10, Math.min(100, Number(input.limit ?? 50) || 50));
+    const transactions = await this.earlyBuyers.findWalletTransactions({
+      wallet,
+      limit,
+      before: input.before ?? null,
+    });
+    return {
+      wallet,
+      provider: this.earlyBuyers.provider,
+      limit,
+      before: input.before ?? null,
+      nextBefore:
+        transactions.length >= limit
+          ? transactions[transactions.length - 1]?.signature ?? null
+          : null,
+      transactions: transactions.map((transaction) => ({
+        ...transaction,
+        timestamp: transaction.timestamp.toISOString(),
+      })),
     };
   }
 

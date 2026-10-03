@@ -77,7 +77,11 @@ function eventTxHash(event: any) {
 function activityDetail(event: any) {
   const reason = event?.metadata?.reason;
   const token = event?.metadata?.token;
+  const leader = event?.handle
+    ? `@${event.handle}`
+    : event?.display_name ?? event?.metadata?.traderName ?? null;
   return [
+    leader ? `Leader: ${leader}` : "",
     reason
       ? `Reason: ${String(reason).replaceAll("_", " ").toLowerCase()}`
       : "",
@@ -564,6 +568,35 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
     }
   }
 
+  async function emergencyExit(positionId: string, percentage: number) {
+    const position = data?.positions.find((p) => p.id === positionId);
+    const label = position?.symbol ?? position?.token ?? "this position";
+    const value =
+      position?.current_value_usd == null
+        ? "unknown"
+        : `$${(Number(position.current_value_usd) * (percentage / 100)).toFixed(2)}`;
+    if (position?.mode !== "live") return;
+    if (
+      !confirm(
+        `Emergency sell ${percentage}% of ${label} anyway?\n\nThis bypasses VALUE_SANITY_CHECK protection. The route may be much worse than the dashboard value.\nEstimated dashboard value: ${value}\nCurrent PnL: ${position?.pnl_pct == null ? "unknown" : `${Number(position.pnl_pct).toFixed(1)}%`}\n\nOnly use this if you prefer a bad exit over staying in the position. This cannot be undone.`,
+      )
+    )
+      return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await request(`/api/positions/${positionId}/emergency-exit`, token, {
+        method: "POST",
+        body: JSON.stringify({ percentage, confirmEmergency: true }),
+      });
+      await load();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function convertPaperToLive(positionId: string) {
     const position = data?.positions.find((p) => p.id === positionId);
     if (!position) return;
@@ -819,6 +852,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         <a href="#follow">Follow</a>
         <a href="#discovery">Discovery</a>
         <a href="#leaders">Leaders</a>
+        <a href="/leader-transactions">Leader txs</a>
       </nav>
 
       {message && <div className="notice">{message}</div>}
@@ -977,10 +1011,10 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
                   <span>{formatEventTime(event.created_at)}</span>
                   <b>{event.type?.replaceAll("_", " ")}</b>
                   <p>{event.message}</p>
-                  {(detail || txHash) && (
+                  {(detail || txHash || event.severity === "error") && (
                     <div className="activityMeta">
                       {detail && <span>{detail}</span>}
-                      {txHash && (
+                      {txHash ? (
                         <a
                           href={`https://solscan.io/tx/${txHash}`}
                           target="_blank"
@@ -988,7 +1022,9 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
                         >
                           Solscan
                         </a>
-                      )}
+                      ) : event.severity === "error" ? (
+                        <span>No transaction submitted</span>
+                      ) : null}
                     </div>
                   )}
                 </div>
@@ -1298,6 +1334,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               unfollow={unfollow}
               followAgain={followAgain}
               exit={exit}
+              emergencyExit={emergencyExit}
               convertPaperToLive={convertPaperToLive}
               retryExecution={retryExecution}
             />
@@ -1314,6 +1351,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
               unfollow={unfollow}
               followAgain={followAgain}
               exit={exit}
+              emergencyExit={emergencyExit}
               convertPaperToLive={convertPaperToLive}
               retryExecution={retryExecution}
             />
@@ -1330,12 +1368,14 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
 function PositionCard({
   position: p,
   onExit,
+  onEmergencyExit,
   onConvertPaperToLive,
   canConvertPaperToLive,
   busy,
 }: {
   position: any;
   onExit: (id: string, percentage: number) => void;
+  onEmergencyExit: (id: string, percentage: number) => void;
   onConvertPaperToLive: (id: string) => void;
   canConvertPaperToLive: boolean;
   busy: boolean;
@@ -1386,6 +1426,16 @@ function PositionCard({
             {p.mode === "live" ? "Sell" : "Close"} {percentage}%
           </button>
         ))}
+        {p.mode === "live" && (
+          <button
+            className="danger"
+            disabled={busy}
+            title="Bypass value sanity check and submit the sell anyway"
+            onClick={() => onEmergencyExit(p.id, 100)}
+          >
+            Emergency sell 100%
+          </button>
+        )}
         {p.mode === "paper" && (
           <button
             className="danger"
@@ -1415,6 +1465,7 @@ function LeaderCard({
   unfollow,
   followAgain,
   exit,
+  emergencyExit,
   convertPaperToLive,
   retryExecution,
 }: {
@@ -1427,6 +1478,7 @@ function LeaderCard({
   unfollow: (id: string, label: string) => Promise<void>;
   followAgain: (id: string, label: string) => Promise<void>;
   exit: (positionId: string, percentage: number) => Promise<void>;
+  emergencyExit: (positionId: string, percentage: number) => Promise<void>;
   convertPaperToLive: (positionId: string) => Promise<void>;
   retryExecution: (execution: any) => Promise<void>;
 }) {
@@ -1470,9 +1522,14 @@ function LeaderCard({
   }
 
   function confirmLive() {
+    const sourceWallet = t.wallets?.find((w: any) => w.chain === "solana")?.address;
+    const sourceLine =
+      t.source === "wallet"
+        ? `Source: discovered/manual Solana wallet\nWallet: ${sourceWallet ?? "unknown"}`
+        : `Source: FomoScan identity${sourceWallet ? `\nWallet: ${sourceWallet}` : ""}`;
     if (
       !confirm(
-        `Enable LIVE trading for ${label}?\n$${Number(t.trade_amount_usd).toFixed(2)} per entry\nTP: ${t.take_profit_pct ?? "off"}% · SL: ${t.stop_loss_pct ?? "off"}% · Max hold: ${formatMaxHold(t.max_hold_seconds)}\nCopy wallet: ${dashboard.wallet?.display_address ?? "not configured"}\nUSDC: ${dashboard.walletBalances?.usdc == null ? "unknown" : `$${dashboard.walletBalances.usdc.toFixed(2)}`}\nSOL: ${dashboard.walletBalances?.sol == null ? "unknown" : dashboard.walletBalances.sol.toFixed(4)}\n\nFuture qualifying entries can spend real funds.`,
+        `Enable LIVE trading for ${label}?\n${sourceLine}\n\n$${Number(t.trade_amount_usd).toFixed(2)} per entry\nTP: ${t.take_profit_pct ?? "off"}% · SL: ${t.stop_loss_pct ?? "off"}% · Max hold: ${formatMaxHold(t.max_hold_seconds)}\nTop-ups: ${t.copy_topups ? "copy" : "skip"} · Mirror exits: ${t.mirror_exits ? "on" : "off"}\n\nCopy wallet: ${dashboard.wallet?.display_address ?? "not configured"}\nUSDC: ${dashboard.walletBalances?.usdc == null ? "unknown" : `$${dashboard.walletBalances.usdc.toFixed(2)}`}\nSOL: ${dashboard.walletBalances?.sol == null ? "unknown" : dashboard.walletBalances.sol.toFixed(4)}\n\nFuture qualifying entries can spend real funds. Paper-follow history does not become live history.`,
       )
     )
       return;
@@ -1681,6 +1738,7 @@ function LeaderCard({
                 key={p.id}
                 position={p}
                 onExit={exit}
+                onEmergencyExit={emergencyExit}
                 onConvertPaperToLive={convertPaperToLive}
                 canConvertPaperToLive={liveReady}
                 busy={busy}
@@ -1698,6 +1756,7 @@ function LeaderCard({
                 key={p.id}
                 position={p}
                 onExit={exit}
+                onEmergencyExit={emergencyExit}
                 onConvertPaperToLive={convertPaperToLive}
                 canConvertPaperToLive={liveReady}
                 busy={busy}

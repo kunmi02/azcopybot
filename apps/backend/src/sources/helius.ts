@@ -18,6 +18,27 @@ export type WalletSwap = {
   feePayer: string | null;
 };
 
+export type WalletTransaction = {
+  signature: string;
+  timestamp: Date;
+  type: string;
+  source: string | null;
+  feePayer: string | null;
+  description: string | null;
+  nativeTransfers: Array<{
+    fromUserAccount: string | null;
+    toUserAccount: string | null;
+    amountSol: number | null;
+  }>;
+  tokenTransfers: Array<{
+    mint: string | null;
+    fromUserAccount: string | null;
+    toUserAccount: string | null;
+    tokenAmount: number | null;
+    tokenStandard: string | null;
+  }>;
+};
+
 export interface EarlyBuyerSource {
   provider: string;
   findEarlyBuyers(input: {
@@ -37,7 +58,18 @@ export interface WalletSwapActivitySource {
   }): Promise<WalletSwap[]>;
 }
 
-export class NoopEarlyBuyerSource implements EarlyBuyerSource {
+export interface WalletTransactionSource {
+  provider: string;
+  findWalletTransactions(input: {
+    wallet: string;
+    limit: number;
+    before?: string | null;
+  }): Promise<WalletTransaction[]>;
+}
+
+export class NoopEarlyBuyerSource
+  implements EarlyBuyerSource, WalletSwapActivitySource, WalletTransactionSource
+{
   readonly provider = "none";
   async findEarlyBuyers(): Promise<EarlyBuyer[]> {
     throw new Error("EARLY_BUYER_PROVIDER_NOT_CONFIGURED");
@@ -46,10 +78,14 @@ export class NoopEarlyBuyerSource implements EarlyBuyerSource {
   async findWalletSwaps(): Promise<WalletSwap[]> {
     throw new Error("WALLET_ACTIVITY_PROVIDER_NOT_CONFIGURED");
   }
+
+  async findWalletTransactions(): Promise<WalletTransaction[]> {
+    throw new Error("WALLET_TRANSACTION_PROVIDER_NOT_CONFIGURED");
+  }
 }
 
 export class HeliusEarlyBuyerSource
-  implements EarlyBuyerSource, WalletSwapActivitySource
+  implements EarlyBuyerSource, WalletSwapActivitySource, WalletTransactionSource
 {
   readonly provider = "helius";
   constructor(
@@ -234,6 +270,75 @@ export class HeliusEarlyBuyerSource
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
       .slice(0, input.limit);
   }
+
+  async findWalletTransactions(input: {
+    wallet: string;
+    limit: number;
+    before?: string | null;
+  }) {
+    const url = new URL(
+      `${this.baseUrl.replace(/\/$/, "")}/addresses/${input.wallet}/transactions`,
+    );
+    url.searchParams.set("api-key", this.apiKey);
+    url.searchParams.set("limit", String(Math.min(100, Math.max(10, input.limit))));
+    if (input.before) url.searchParams.set("before", input.before);
+    url.searchParams.set("token-accounts", "balanceChanged");
+    const res = await fetch(url);
+    if (!res.ok)
+      throw new Error(
+        `HELIUS_WALLET_TRANSACTIONS_HTTP_${res.status}:${await res.text().catch(() => "")}`.slice(
+          0,
+          500,
+        ),
+      );
+    const txs: any[] = await res.json();
+    if (!Array.isArray(txs)) return [];
+
+    return txs
+      .filter((tx) => tx?.signature && tx?.timestamp)
+      .map((tx) => ({
+        signature: String(tx.signature),
+        timestamp: new Date(Number(tx.timestamp) * 1000),
+        type: String(tx.type ?? "UNKNOWN"),
+        source: tx.source == null ? null : String(tx.source),
+        feePayer: tx.feePayer == null ? null : String(tx.feePayer),
+        description: tx.description == null ? null : String(tx.description),
+        nativeTransfers: normalizeNativeTransfers(tx.nativeTransfers).slice(0, 20),
+        tokenTransfers: normalizeTokenTransfers(tx.tokenTransfers).slice(0, 40),
+      }))
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      .slice(0, input.limit);
+  }
+
+}
+
+function normalizeNativeTransfers(value: unknown): WalletTransaction["nativeTransfers"] {
+  if (!Array.isArray(value)) return [];
+  return value.map((transfer: any) => ({
+    fromUserAccount:
+      transfer?.fromUserAccount == null ? null : String(transfer.fromUserAccount),
+    toUserAccount:
+      transfer?.toUserAccount == null ? null : String(transfer.toUserAccount),
+    amountSol: Number.isFinite(Number(transfer?.amount))
+      ? Number(transfer.amount) / 1e9
+      : null,
+  }));
+}
+
+function normalizeTokenTransfers(value: unknown): WalletTransaction["tokenTransfers"] {
+  if (!Array.isArray(value)) return [];
+  return value.map((transfer: any) => ({
+    mint: transfer?.mint == null ? null : String(transfer.mint),
+    fromUserAccount:
+      transfer?.fromUserAccount == null ? null : String(transfer.fromUserAccount),
+    toUserAccount:
+      transfer?.toUserAccount == null ? null : String(transfer.toUserAccount),
+    tokenAmount: Number.isFinite(Number(transfer?.tokenAmount))
+      ? Number(transfer.tokenAmount)
+      : null,
+    tokenStandard:
+      transfer?.tokenStandard == null ? null : String(transfer.tokenStandard),
+  }));
 }
 
 function dedupeSwaps(swaps: WalletSwap[]) {

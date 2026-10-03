@@ -20,6 +20,7 @@ export class PositionService {
     positionId: string,
     percentage: number,
     reason: string,
+    options: { bypassValueSanity?: boolean } = {},
   ) {
     if (![25, 50, 75, 100].includes(percentage))
       throw new Error("INVALID_EXIT_PERCENTAGE");
@@ -77,10 +78,10 @@ export class PositionService {
         userId,
         traderId: position.trader_id,
         positionId,
-        type: "live_sell_started",
+        type: options.bypassValueSanity ? "emergency_sell_started" : "live_sell_started",
         severity: "warning",
-        message: `Live sell started: ${percentage}% of ${market.symbol ?? position.token}`,
-        metadata: { token: position.token, percentage, expectedUsd, reason },
+        message: `${options.bypassValueSanity ? "Emergency sell" : "Live sell"} started: ${percentage}% of ${market.symbol ?? position.token}`,
+        metadata: { token: position.token, percentage, expectedUsd, reason, bypassValueSanity: Boolean(options.bypassValueSanity) },
       });
       const result = await this.executor.sell({
         signerRef: position.signer_ref,
@@ -89,6 +90,7 @@ export class PositionService {
         tokenQty: qty,
         slippageBps: Number(position.slippage_bps ?? 300),
         expectedUsd,
+        bypassValueSanity: Boolean(options.bypassValueSanity),
         onProgress: (stage, message, metadata) =>
           this.activity.emit({
             userId,
@@ -126,18 +128,19 @@ export class PositionService {
         executionId,
         type: "sell_confirmed",
         severity: "success",
-        message: `SELL confirmed: ${percentage}% of ${market.symbol ?? position.token}`,
+        message: `${options.bypassValueSanity ? "EMERGENCY SELL" : "SELL"} confirmed: ${percentage}% of ${market.symbol ?? position.token}`,
         metadata: {
           token: position.token,
           percentage,
           actualUsd: result.actualUsd,
           txHash: result.txHash,
           reason,
+          bypassValueSanity: Boolean(options.bypassValueSanity),
         },
       });
       await this.notify(
         position.telegram_chat_id,
-        `🔴 EXIT EXECUTED\n${percentage}% sold\nReceived: $${result.actualUsd.toFixed(2)}\nReason: ${reason}\nTX: ${result.txHash}`,
+        `${options.bypassValueSanity ? "🚨 EMERGENCY EXIT EXECUTED" : "🔴 EXIT EXECUTED"}\n${percentage}% sold\nReceived: $${result.actualUsd.toFixed(2)}\nReason: ${reason}\nTX: ${result.txHash}`,
       );
     } catch (error) {
       if (error instanceof SubmissionUnknownError) {
