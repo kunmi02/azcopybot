@@ -121,6 +121,7 @@ export class Database {
         take_profit_pct DOUBLE PRECISION DEFAULT 30,
         stop_loss_pct DOUBLE PRECISION DEFAULT 15,
         max_hold_seconds INTEGER DEFAULT 14400,
+        custom_label TEXT,
         dry_run BOOLEAN NOT NULL DEFAULT true,
         enabled BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -176,8 +177,8 @@ export class Database {
       CREATE TABLE IF NOT EXISTS positions (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        trader_id TEXT NOT NULL REFERENCES traders(id) ON DELETE CASCADE,
-        copy_config_id TEXT NOT NULL REFERENCES copy_configs(id) ON DELETE CASCADE,
+        trader_id TEXT REFERENCES traders(id) ON DELETE CASCADE,
+        copy_config_id TEXT REFERENCES copy_configs(id) ON DELETE CASCADE,
         copy_wallet_id TEXT REFERENCES copy_wallets(id) ON DELETE SET NULL,
         chain TEXT NOT NULL,
         token TEXT NOT NULL,
@@ -187,13 +188,19 @@ export class Database {
         highest_price DOUBLE PRECISION NOT NULL,
         mode TEXT NOT NULL CHECK (mode IN ('paper','live')),
         status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closing','closed','failed')),
+        source_type TEXT NOT NULL DEFAULT 'leader',
+        source_label TEXT,
+        source_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
         opened_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         closed_at TIMESTAMPTZ
       );
 
       CREATE UNIQUE INDEX IF NOT EXISTS positions_one_open_idx
-        ON positions(user_id,trader_id,chain,token) WHERE status='open';
+        ON positions(user_id,trader_id,chain,token) WHERE status='open' AND trader_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS positions_one_open_auto_idx
+        ON positions(user_id,chain,token) WHERE status='open' AND source_type='auto';
       CREATE INDEX IF NOT EXISTS positions_open_idx ON positions(status, chain, token);
+      CREATE INDEX IF NOT EXISTS positions_source_idx ON positions(user_id, source_type, status, opened_at DESC);
 
       CREATE TABLE IF NOT EXISTS executions (
         id TEXT PRIMARY KEY,
@@ -213,6 +220,23 @@ export class Database {
         status TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         confirmed_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS auto_trade_signals (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        chain TEXT NOT NULL,
+        token TEXT NOT NULL,
+        signal_type TEXT NOT NULL,
+        signal_source TEXT,
+        signal_score DOUBLE PRECISION,
+        status TEXT NOT NULL DEFAULT 'started',
+        position_id TEXT REFERENCES positions(id) ON DELETE SET NULL,
+        execution_id TEXT REFERENCES executions(id) ON DELETE SET NULL,
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(user_id, chain, token)
       );
 
       CREATE TABLE IF NOT EXISTS activity_events (
@@ -343,6 +367,14 @@ export class Database {
     await this.pool.query(
       `ALTER TABLE copy_configs ALTER COLUMN trade_amount_usd SET DEFAULT 1`,
     );
+    await this.pool.query(`ALTER TABLE copy_configs ADD COLUMN IF NOT EXISTS custom_label TEXT`);
+    await this.pool.query(`ALTER TABLE positions ALTER COLUMN trader_id DROP NOT NULL`);
+    await this.pool.query(`ALTER TABLE positions ALTER COLUMN copy_config_id DROP NOT NULL`);
+    await this.pool.query(`ALTER TABLE positions ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'leader'`);
+    await this.pool.query(`ALTER TABLE positions ADD COLUMN IF NOT EXISTS source_label TEXT`);
+    await this.pool.query(`ALTER TABLE positions ADD COLUMN IF NOT EXISTS source_metadata JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    await this.pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS positions_one_open_auto_idx ON positions(user_id,chain,token) WHERE status='open' AND source_type='auto'`);
+    await this.pool.query(`CREATE INDEX IF NOT EXISTS positions_source_idx ON positions(user_id, source_type, status, opened_at DESC)`);
     await this.pool.query(
       `ALTER TABLE auto_trading_configs ADD COLUMN IF NOT EXISTS min_hold_seconds INTEGER DEFAULT 0`,
     );
@@ -630,7 +662,7 @@ export class Database {
     return rows[0] ?? null;
   }
 
-  async followTrader(userId: string, traderId: string) {
+  async followTrader(userId: string, traderId: string, customLabel?: string | null) {
     const wallet = await this.getCopyWallet(userId, "solana");
     const existing = await this.pool.query(
       `SELECT id FROM copy_configs WHERE user_id=$1 AND trader_id=$2`,
@@ -639,11 +671,13 @@ export class Database {
     const id = existing.rows[0]?.id ?? randomUUID();
     await this.pool.query(
       `
-      INSERT INTO copy_configs(id,user_id,trader_id,trading_wallet_id,mirror_exits)
-      VALUES($1,$2,$3,$4,true)
-      ON CONFLICT(user_id,trader_id) DO UPDATE SET enabled=true
+      INSERT INTO copy_configs(id,user_id,trader_id,trading_wallet_id,mirror_exits,custom_label)
+      VALUES($1,$2,$3,$4,true,$5)
+      ON CONFLICT(user_id,trader_id) DO UPDATE SET
+        enabled=true,
+        custom_label=COALESCE(EXCLUDED.custom_label,copy_configs.custom_label)
     `,
-      [id, userId, traderId, wallet?.id ?? null],
+      [id, userId, traderId, wallet?.id ?? null, cleanLabel(customLabel)],
     );
     return this.getCopyConfig(id);
   }
@@ -734,6 +768,7 @@ export class Database {
       takeProfitPct: number | null;
       stopLossPct: number | null;
       maxHoldSeconds: number | null;
+      customLabel: string | null;
       enabled: boolean;
       dryRun: boolean;
     }>,
@@ -747,10 +782,15 @@ export class Database {
       takeProfitPct: "take_profit_pct",
       stopLossPct: "stop_loss_pct",
       maxHoldSeconds: "max_hold_seconds",
+      customLabel: "custom_label",
       enabled: "enabled",
       dryRun: "dry_run",
     };
-    const entries = Object.entries(patch).filter(([k]) => k in allowed);
+    const normalizedPatch = { ...patch };
+    if ("customLabel" in normalizedPatch) {
+      normalizedPatch.customLabel = cleanLabel(normalizedPatch.customLabel);
+    }
+    const entries = Object.entries(normalizedPatch).filter(([k]) => k in allowed);
     if (!entries.length) return this.getCopyConfig(id);
     const sets = entries.map(([k], i) => `${allowed[k]}=$${i + 3}`);
     await this.pool.query(
@@ -982,8 +1022,8 @@ export class Database {
 
   async createPosition(input: {
     userId: string;
-    traderId: string;
-    configId: string;
+    traderId: string | null;
+    configId: string | null;
     copyWalletId: string | null;
     chain: string;
     token: string;
@@ -991,12 +1031,23 @@ export class Database {
     costUsd: number;
     entryPrice: number;
     mode: "paper" | "live";
+    sourceType?: string;
+    sourceLabel?: string | null;
+    sourceMetadata?: Record<string, unknown>;
   }) {
     const existing = await this.pool.query(
       `
-      SELECT * FROM positions WHERE user_id=$1 AND trader_id=$2 AND chain=$3 AND token=$4 AND status='open'
+      SELECT * FROM positions
+      WHERE user_id=$1
+        AND chain=$3
+        AND token=$4
+        AND status='open'
+        AND (
+          ($2::text IS NOT NULL AND trader_id=$2)
+          OR ($2::text IS NULL AND source_type=COALESCE($5,'auto'))
+        )
     `,
-      [input.userId, input.traderId, input.chain, input.token],
+      [input.userId, input.traderId, input.chain, input.token, input.sourceType ?? 'leader'],
     );
     if (existing.rows[0]) {
       const current = existing.rows[0];
@@ -1017,8 +1068,8 @@ export class Database {
     const id = randomUUID();
     await this.pool.query(
       `
-      INSERT INTO positions(id,user_id,trader_id,copy_config_id,copy_wallet_id,chain,token,qty,cost_usd,avg_entry_price,highest_price,mode)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11)
+      INSERT INTO positions(id,user_id,trader_id,copy_config_id,copy_wallet_id,chain,token,qty,cost_usd,avg_entry_price,highest_price,mode,source_type,source_label,source_metadata)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14::jsonb)
     `,
       [
         id,
@@ -1032,6 +1083,9 @@ export class Database {
         input.costUsd,
         input.entryPrice,
         input.mode,
+        input.sourceType ?? "leader",
+        input.sourceLabel ?? null,
+        JSON.stringify(input.sourceMetadata ?? {}),
       ],
     );
     return (await this.pool.query(`SELECT * FROM positions WHERE id=$1`, [id]))
@@ -1047,10 +1101,18 @@ export class Database {
     }
     const { rows } = await this.pool.query(
       `
-      SELECT p.*, t.handle, t.display_name, c.take_profit_pct,c.stop_loss_pct,c.max_hold_seconds,c.dry_run,c.slippage_bps,
+      SELECT p.*, t.handle, COALESCE(t.display_name,p.source_label,'Autonomous') AS display_name,
+             COALESCE(c.take_profit_pct,ac.take_profit_pct) AS take_profit_pct,
+             COALESCE(c.stop_loss_pct,ac.stop_loss_pct) AS stop_loss_pct,
+             COALESCE(c.max_hold_seconds,ac.max_hold_seconds) AS max_hold_seconds,
+             ac.min_hold_seconds,
+             COALESCE(c.dry_run,false) AS dry_run,
+             COALESCE(c.slippage_bps,300) AS slippage_bps,
              u.telegram_chat_id, cw.public_address AS copy_wallet_address, cw.signer_ref
-      FROM positions p JOIN traders t ON t.id=p.trader_id
-      JOIN copy_configs c ON c.id=p.copy_config_id
+      FROM positions p
+      LEFT JOIN traders t ON t.id=p.trader_id
+      LEFT JOIN copy_configs c ON c.id=p.copy_config_id
+      LEFT JOIN auto_trading_configs ac ON ac.user_id=p.user_id AND p.source_type='auto'
       JOIN users u ON u.id=p.user_id
       LEFT JOIN copy_wallets cw ON cw.id=p.copy_wallet_id
       WHERE ${where}
@@ -1064,10 +1126,17 @@ export class Database {
   async getPositionForUser(userId: string, positionId: string) {
     const { rows } = await this.pool.query(
       `
-      SELECT p.*, c.take_profit_pct,c.stop_loss_pct,c.max_hold_seconds,c.dry_run,c.slippage_bps,
-             cw.public_address AS copy_wallet_address,cw.signer_ref,t.handle,t.display_name,u.telegram_chat_id
-      FROM positions p JOIN copy_configs c ON c.id=p.copy_config_id
-      JOIN traders t ON t.id=p.trader_id JOIN users u ON u.id=p.user_id
+      SELECT p.*, COALESCE(c.take_profit_pct,ac.take_profit_pct) AS take_profit_pct,
+             COALESCE(c.stop_loss_pct,ac.stop_loss_pct) AS stop_loss_pct,
+             COALESCE(c.max_hold_seconds,ac.max_hold_seconds) AS max_hold_seconds,
+             ac.min_hold_seconds,
+             COALESCE(c.dry_run,false) AS dry_run,
+             COALESCE(c.slippage_bps,300) AS slippage_bps,
+             cw.public_address AS copy_wallet_address,cw.signer_ref,t.handle,COALESCE(t.display_name,p.source_label,'Autonomous') AS display_name,u.telegram_chat_id
+      FROM positions p
+      LEFT JOIN copy_configs c ON c.id=p.copy_config_id
+      LEFT JOIN auto_trading_configs ac ON ac.user_id=p.user_id AND p.source_type='auto'
+      LEFT JOIN traders t ON t.id=p.trader_id JOIN users u ON u.id=p.user_id
       LEFT JOIN copy_wallets cw ON cw.id=p.copy_wallet_id
       WHERE p.id=$1 AND p.user_id=$2
     `,
@@ -1284,11 +1353,42 @@ export class Database {
     return rows;
   }
 
+  async listExecutionsForConfig(userId: string, configId: string, limit = 100, offset = 0) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT e.*, t.handle,t.display_name
+      FROM copy_configs c
+      JOIN executions e ON e.user_id=c.user_id AND e.trader_id=c.trader_id
+      LEFT JOIN traders t ON t.id=e.trader_id
+      WHERE c.user_id=$1 AND c.id=$2
+      ORDER BY e.created_at DESC
+      LIMIT $3 OFFSET $4
+    `,
+      [userId, configId, limit, offset],
+    );
+    return rows;
+  }
+
+  async countExecutionsForConfig(userId: string, configId: string) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM copy_configs c
+      JOIN executions e ON e.user_id=c.user_id AND e.trader_id=c.trader_id
+      WHERE c.user_id=$1 AND c.id=$2
+    `,
+      [userId, configId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
   async listExecutions(userId: string, limit = 100) {
     const { rows } = await this.pool.query(
       `
-      SELECT e.*, t.handle,t.display_name FROM executions e
+      SELECT e.*, t.handle,COALESCE(t.display_name,p.source_label) AS display_name,p.source_type
+      FROM executions e
       LEFT JOIN traders t ON t.id=e.trader_id
+      LEFT JOIN positions p ON p.id=e.position_id
       WHERE e.user_id=$1 ORDER BY e.created_at DESC LIMIT $2
     `,
       [userId, limit],
@@ -1299,8 +1399,10 @@ export class Database {
   async listActivityEvents(userId: string, limit = 100) {
     const { rows } = await this.pool.query(
       `
-      SELECT a.*, t.handle,t.display_name FROM activity_events a
+      SELECT a.*, t.handle,COALESCE(t.display_name,p.source_label) AS display_name,p.source_type
+      FROM activity_events a
       LEFT JOIN traders t ON t.id=a.trader_id
+      LEFT JOIN positions p ON p.id=a.position_id
       WHERE a.user_id=$1 ORDER BY a.created_at DESC LIMIT $2
     `,
       [userId, limit],
@@ -1678,6 +1780,163 @@ export class Database {
     return rows[0];
   }
 
+  async listEnabledAutoTradingConfigs() {
+    const { rows } = await this.pool.query(
+      `
+      SELECT ac.*, u.telegram_chat_id, u.paused,
+             cw.id AS copy_wallet_id,cw.public_address,cw.signer_ref
+      FROM auto_trading_configs ac
+      JOIN users u ON u.id=ac.user_id
+      LEFT JOIN copy_wallets cw ON cw.user_id=ac.user_id AND cw.chain='solana' AND cw.enabled=true
+      WHERE ac.enabled_live=true
+      ORDER BY ac.updated_at ASC
+    `,
+    );
+    return rows;
+  }
+
+  async listAutoTradeCandidates(userId: string, config: any, limit = 5) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT wt.*,
+             COUNT(teb.id)::int AS early_buyer_count,
+             COALESCE(MAX(NULLIF(teb.buy_amount_usd,0)),0) AS largest_early_buy_usd
+      FROM winning_tokens wt
+      LEFT JOIN token_early_buyers teb ON teb.winning_token_id=wt.id
+      WHERE wt.chain='solana'
+        AND wt.detected_at >= now() - interval '48 hours'
+        AND COALESCE(wt.liquidity_usd,0) >= $2
+        AND COALESCE(wt.market_cap_usd, wt.liquidity_usd, 0) >= $3
+        AND COALESCE(wt.market_cap_usd, wt.liquidity_usd, 0) <= $4
+        AND NOT EXISTS (
+          SELECT 1 FROM auto_trade_signals s
+          WHERE s.user_id=$1 AND s.chain=wt.chain AND s.token=wt.token_mint
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM positions p
+          WHERE p.user_id=$1 AND p.chain=wt.chain AND p.token=wt.token_mint AND p.status='open'
+        )
+      GROUP BY wt.id
+      HAVING COUNT(teb.id) > 0
+      ORDER BY wt.detected_at DESC, COALESCE(wt.peak_multiple,0) DESC, early_buyer_count DESC
+      LIMIT $5
+    `,
+      [
+        userId,
+        Number(config.min_liquidity_usd ?? 0),
+        Number(config.min_market_cap_usd ?? 0),
+        Number(config.max_market_cap_usd ?? 1_000_000_000),
+        limit,
+      ],
+    );
+    return rows;
+  }
+
+  async tryStartAutoTradeSignal(input: {
+    userId: string;
+    chain: string;
+    token: string;
+    signalType: string;
+    signalSource?: string | null;
+    signalScore?: number | null;
+    metadata?: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    const { rows } = await this.pool.query(
+      `
+      INSERT INTO auto_trade_signals(id,user_id,chain,token,signal_type,signal_source,signal_score,status,metadata)
+      VALUES($1,$2,$3,$4,$5,$6,$7,'started',$8::jsonb)
+      ON CONFLICT(user_id,chain,token) DO NOTHING
+      RETURNING *
+    `,
+      [
+        id,
+        input.userId,
+        input.chain,
+        input.token,
+        input.signalType,
+        input.signalSource ?? null,
+        input.signalScore ?? null,
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    return rows[0] ?? null;
+  }
+
+  async updateAutoTradeSignal(
+    id: string,
+    patch: { status: string; positionId?: string | null; executionId?: string | null; metadata?: Record<string, unknown> },
+  ) {
+    await this.pool.query(
+      `
+      UPDATE auto_trade_signals
+      SET status=$2, position_id=COALESCE($3,position_id), execution_id=COALESCE($4,execution_id),
+          metadata=metadata || $5::jsonb, updated_at=now()
+      WHERE id=$1
+    `,
+      [id, patch.status, patch.positionId ?? null, patch.executionId ?? null, JSON.stringify(patch.metadata ?? {})],
+    );
+  }
+
+  async countOpenAutoPositions(userId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT COUNT(*)::int AS count FROM positions WHERE user_id=$1 AND source_type='auto' AND status='open'`,
+      [userId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  async countDailyAutoBuys(userId: string) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT COUNT(*)::int AS count FROM executions e
+      LEFT JOIN positions p ON p.id=e.position_id
+      WHERE e.user_id=$1 AND e.side='buy' AND e.reason LIKE 'AUTO_%'
+        AND e.status IN ('confirmed','submitted_unknown')
+        AND e.created_at >= date_trunc('day', now())
+    `,
+      [userId],
+    );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  async autoDailyRealizedPnlUsd(userId: string) {
+    // V1 does not yet attribute partial sell proceeds back to proportional cost basis.
+    // Return 0 instead of counting fresh buys as realized losses and blocking auto mode.
+    await Promise.resolve(userId);
+    return 0;
+  }
+
+  async listAutoPositions(userId: string, limit = 50) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT p.*, p.source_label AS display_name,
+             ac.take_profit_pct,ac.stop_loss_pct,ac.max_hold_seconds,ac.min_hold_seconds,
+             false AS dry_run, 300 AS slippage_bps
+      FROM positions p
+      LEFT JOIN auto_trading_configs ac ON ac.user_id=p.user_id
+      WHERE p.user_id=$1 AND p.source_type='auto'
+      ORDER BY p.opened_at DESC LIMIT $2
+    `,
+      [userId, limit],
+    );
+    return rows;
+  }
+
+  async listAutoExecutions(userId: string, limit = 50) {
+    const { rows } = await this.pool.query(
+      `
+      SELECT e.*, p.source_type, p.source_label AS display_name
+      FROM executions e
+      LEFT JOIN positions p ON p.id=e.position_id
+      WHERE e.user_id=$1 AND (e.reason LIKE 'AUTO_%' OR p.source_type='auto')
+      ORDER BY e.created_at DESC LIMIT $2
+    `,
+      [userId, limit],
+    );
+    return rows;
+  }
+
   async dashboard(userId: string) {
     const [
       positions,
@@ -1708,6 +1967,12 @@ export class Database {
   }
 }
 
+function cleanLabel(value: unknown) {
+  if (value == null) return null;
+  const label = String(value).trim().replace(/\s+/g, " ").slice(0, 80);
+  return label || null;
+}
+
 function mapCopyConfig(r: any): CopyConfig {
   return {
     id: r.id,
@@ -1723,6 +1988,7 @@ function mapCopyConfig(r: any): CopyConfig {
     stopLossPct: r.stop_loss_pct == null ? null : Number(r.stop_loss_pct),
     maxHoldSeconds:
       r.max_hold_seconds == null ? null : Number(r.max_hold_seconds),
+    customLabel: r.custom_label ?? null,
     dryRun: r.dry_run,
     enabled: r.enabled,
   };

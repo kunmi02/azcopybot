@@ -18,6 +18,7 @@ import { ActivityService } from "./services/activity.js";
 import { HealthService } from "./services/health.js";
 import { RetryExecutionService } from "./services/retry.js";
 import { SourcingService } from "./services/sourcing.js";
+import { AutoTradingService } from "./services/auto-trading.js";
 import {
   HeliusEarlyBuyerSource,
   NoopEarlyBuyerSource,
@@ -119,6 +120,7 @@ const fomoscan = new FomoScanClient(
 );
 const traders = new TraderService(db, fomoscan, refreshWatchers, activity);
 const sourcing = new SourcingService(db, prices, earlyBuyerSource);
+const autoTrading = new AutoTradingService(db, prices, executor, notify, activity);
 const sourcingScanOptions = {
   maxTokens: config.SOURCING_SCAN_MAX_TOKENS,
   minLiquidityUsd: config.SOURCING_MIN_LIQUIDITY_USD,
@@ -191,23 +193,30 @@ async function runSourcingScan() {
 }
 
 const sourcingInitialTimer = setTimeout(() => {
-  runSourcingScan().catch((error) =>
-    console.error("sourcing_scan_failed", error),
-  );
+  runSourcingScan()
+    .then(() => autoTrading.runOnce())
+    .catch((error) => console.error("sourcing_scan_failed", error));
 }, 15_000);
 sourcingInitialTimer.unref();
 const sourcingTimer = setInterval(() => {
-  runSourcingScan().catch((error) =>
-    console.error("sourcing_scan_failed", error),
-  );
+  runSourcingScan()
+    .then(() => autoTrading.runOnce())
+    .catch((error) => console.error("sourcing_scan_failed", error));
 }, config.SOURCING_SCAN_INTERVAL_MS);
 sourcingTimer.unref();
+const autoTradingTimer = setInterval(() => {
+  autoTrading
+    .runOnce()
+    .catch((error) => console.error("auto_trading_loop_failed", error));
+}, 60_000);
+autoTradingTimer.unref();
 
 async function shutdown(signal: string) {
   console.log("shutdown", signal);
   clearInterval(positionTimer);
   clearInterval(reconcileTimer);
   clearInterval(sourcingTimer);
+  clearInterval(autoTradingTimer);
   clearTimeout(sourcingInitialTimer);
   await watcher.stop();
   await api.close();

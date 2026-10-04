@@ -42,9 +42,40 @@ type Readiness = {
   balances: { sol: number | null; usdc: number | null };
 };
 
+type AutoPosition = {
+  id: string;
+  token: string;
+  qty: string | number;
+  cost_usd: number;
+  avg_entry_price: number;
+  current_value_usd: number | null;
+  pnl_pct: number | null;
+  symbol: string | null;
+  mode: string;
+  status: string;
+  opened_at: string;
+  source_label?: string | null;
+};
+
+type AutoExecution = {
+  id: string;
+  token: string;
+  side: "buy" | "sell";
+  reason: string;
+  requested_usd: number | null;
+  actual_usd: number | null;
+  token_qty: string | number | null;
+  execution_price: number | null;
+  tx_hash: string | null;
+  status: string;
+  created_at: string;
+};
+
 type AutoResponse = {
   config: AutoConfig;
   readiness: Readiness;
+  positions?: AutoPosition[];
+  executions?: AutoExecution[];
   status?: {
     autoEntryEngine: string;
     openAutoPositions: number;
@@ -72,6 +103,8 @@ export default function AutoTradingPage() {
   const [config, setConfig] = useState<AutoConfig | null>(null);
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [status, setStatus] = useState<AutoResponse["status"] | null>(null);
+  const [positions, setPositions] = useState<AutoPosition[]>([]);
+  const [executions, setExecutions] = useState<AutoExecution[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -98,6 +131,8 @@ export default function AutoTradingPage() {
       setConfig(result.config);
       setReadiness(result.readiness);
       setStatus(result.status ?? null);
+      setPositions(result.positions ?? []);
+      setExecutions(result.executions ?? []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -115,13 +150,16 @@ export default function AutoTradingPage() {
     setBusy(true);
     setMessage("");
     try {
+      const { enabledLive: _enabledLive, ...settings } = config;
       const result = (await request("/api/auto-trading/config", {
         method: "PATCH",
-        body: JSON.stringify({ ...config, enabledLive: false }),
+        body: JSON.stringify(settings),
       })) as AutoResponse;
       setConfig(result.config);
       setReadiness(result.readiness);
-      setMessage("Autonomous trading settings saved. Live auto mode remains off.");
+      setPositions(result.positions ?? positions);
+      setExecutions(result.executions ?? executions);
+      setMessage("Autonomous trading settings saved.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -150,6 +188,8 @@ export default function AutoTradingPage() {
       })) as AutoResponse;
       setConfig(result.config);
       setReadiness(result.readiness);
+      setPositions(result.positions ?? positions);
+      setExecutions(result.executions ?? executions);
       setMessage(`Autonomous live trading ${enabled ? "enabled" : "disabled"}.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -193,6 +233,60 @@ export default function AutoTradingPage() {
         <div className="card stat">
           <span>Auto engine</span>
           <strong className="small">{status?.autoEntryEngine ?? "settings"}</strong>
+        </div>
+      </section>
+
+      <section className="autoRuntimeGrid">
+        <div className="card">
+          <div className="sectionTitle">
+            <h2>Auto positions</h2>
+            <span>{positions.length}</span>
+          </div>
+          {positions.length ? (
+            <div className="autoRuntimeList">
+              {positions.map((position) => (
+                <div className="autoRuntimeCard" key={position.id}>
+                  <div className="autoRuntimeTopline">
+                    <strong>{position.symbol ?? shortToken(position.token)}</strong>
+                    <span className={position.status === "open" ? "good" : "muted"}>{position.status}</span>
+                  </div>
+                  <div className="autoRuntimeNumbers">
+                    <span>Cost <b>${Number(position.cost_usd).toFixed(2)}</b></span>
+                    <span>Value <b>{position.current_value_usd == null ? "—" : `$${Number(position.current_value_usd).toFixed(2)}`}</b></span>
+                    <span>PnL <b className={Number(position.pnl_pct ?? 0) >= 0 ? "good" : "bad"}>{position.pnl_pct == null ? "—" : `${Number(position.pnl_pct).toFixed(1)}%`}</b></span>
+                  </div>
+                  <small>{shortToken(position.token)} · opened {new Date(position.opened_at).toLocaleString()}</small>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted compactText">No autonomous positions yet.</p>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="sectionTitle">
+            <h2>Auto executions</h2>
+            <span>{executions.length}</span>
+          </div>
+          {executions.length ? (
+            <div className="autoRuntimeList">
+              {executions.map((execution) => (
+                <div className={execution.status.startsWith("failed:") ? "autoRuntimeCard failed" : "autoRuntimeCard"} key={execution.id}>
+                  <div className="autoRuntimeTopline">
+                    <strong className={execution.side === "buy" ? "buy" : "sell"}>{execution.side.toUpperCase()}</strong>
+                    <span>{execution.actual_usd == null ? "—" : `$${Number(execution.actual_usd).toFixed(2)}`}</span>
+                  </div>
+                  <p>{execution.reason.replaceAll("_", " ").toLowerCase()} · {shortToken(execution.token)}</p>
+                  <small>{execution.status} · {new Date(execution.created_at).toLocaleString()}</small>
+                  {execution.tx_hash && <a href={`https://solscan.io/tx/${execution.tx_hash}`} target="_blank" rel="noreferrer">Solscan</a>}
+                  {execution.status.startsWith("failed:") && <pre>{execution.status.slice("failed:".length)}</pre>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted compactText">No autonomous executions yet.</p>
+          )}
         </div>
       </section>
 
@@ -315,6 +409,10 @@ function HoldSelect({ label, value, allowOff, onChange }: { label: string; value
       </select>
     </label>
   );
+}
+
+function shortToken(value: string) {
+  return value.length <= 16 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
 
 function formatDuration(seconds: number | null) {

@@ -7,7 +7,7 @@ import { VersionedTransaction } from "@solana/web3.js";
 import { loadSolanaSigner } from "../wallet.js";
 
 export const SOLANA_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-export const MIN_SOL_LAMPORTS = 100_000_000n; // 0.1 SOL
+export const MIN_SOL_LAMPORTS = 30_000_000n; // 0.03 SOL
 
 type ProgressFn = (
   stage: string,

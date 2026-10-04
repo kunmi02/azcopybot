@@ -160,19 +160,27 @@ export async function buildApi(
 
   app.get("/api/auto-trading/config", async (req) => {
     const user = await requireUser(req, db);
-    const [autoConfig, readiness] = await Promise.all([
+    const [autoConfig, readiness, autoPositions, autoExecutions, openAutoPositions, dailyAutoBuys, dailyRealizedPnlUsd] = await Promise.all([
       db.getAutoTradingConfig(user.id),
       autoTradingReadiness(config, db, rpc, user.id),
+      db.listAutoPositions(user.id, 50),
+      db.listAutoExecutions(user.id, 50),
+      db.countOpenAutoPositions(user.id),
+      db.countDailyAutoBuys(user.id),
+      db.autoDailyRealizedPnlUsd(user.id),
     ]);
+    const enrichedPositions = await enrichPositions(autoPositions, prices);
     return {
       config: publicAutoTradingConfig(autoConfig),
       readiness,
       status: {
-        autoEntryEngine: "settings_only",
-        openAutoPositions: 0,
-        dailyAutoBuys: 0,
-        dailyRealizedPnlUsd: 0,
+        autoEntryEngine: "enabled_worker",
+        openAutoPositions,
+        dailyAutoBuys,
+        dailyRealizedPnlUsd,
       },
+      positions: enrichedPositions.map(publicPosition),
+      executions: autoExecutions.map(publicExecution),
     };
   });
 
@@ -373,6 +381,36 @@ export async function buildApi(
     };
   });
 
+  app.get("/api/leaders/:configId/executions", async (req, reply) => {
+    const user = await requireUser(req, db);
+    const configId = String((req.params as any).configId ?? "");
+    const limit = Math.max(
+      10,
+      Math.min(100, Number((req.query as any)?.limit ?? 100) || 100),
+    );
+    const offset = Math.max(0, Number((req.query as any)?.offset ?? 0) || 0);
+    const [active, inactive] = await Promise.all([
+      db.listUserTraders(user.id),
+      db.listInactiveUserTraders(user.id),
+    ]);
+    const leader = [...active, ...inactive].find(
+      (row: any) => String(row.config_id) === configId,
+    );
+    if (!leader) return reply.status(404).send({ error: "LEADER_NOT_FOUND" });
+    const [executions, total] = await Promise.all([
+      db.listExecutionsForConfig(user.id, configId, limit, offset),
+      db.countExecutionsForConfig(user.id, configId),
+    ]);
+    return {
+      leader: publicTrader(leader),
+      executions: executions.map(publicExecution),
+      limit,
+      offset,
+      total,
+      nextOffset: offset + executions.length < total ? offset + executions.length : null,
+    };
+  });
+
   app.get("/api/system-health", async (req) => {
     await requireUser(req, db);
     const rpcStarted = Date.now();
@@ -475,6 +513,9 @@ export async function buildApi(
     }
     const patch = { ...body };
     delete patch.confirmLive;
+    if ("customLabel" in patch) {
+      patch.customLabel = String(patch.customLabel ?? "").trim() || null;
+    }
     await traders.updateConfig(user.id, id, patch);
     return { ok: true };
   });
@@ -616,6 +657,35 @@ async function assertLiveReady(
     return `LIVE_SIGNER_NOT_READY:${String(error)}`;
   }
   return null;
+}
+
+
+async function enrichPositions(positions: any[], prices: DexScreenerPriceService) {
+  return Promise.all(
+    positions.map(async (p: any) => {
+      const market = await prices.getTokenMarket(p.token).catch(() => null);
+      if (!market)
+        return {
+          ...p,
+          current_price: null,
+          current_value_usd: null,
+          pnl_pct: null,
+          symbol: null,
+        };
+      const currentValue = Number(p.qty) * market.priceUsd;
+      const pnlPct =
+        Number(p.cost_usd) > 0
+          ? ((currentValue - Number(p.cost_usd)) / Number(p.cost_usd)) * 100
+          : 0;
+      return {
+        ...p,
+        current_price: market.priceUsd,
+        current_value_usd: currentValue,
+        pnl_pct: pnlPct,
+        symbol: market.symbol ?? null,
+      };
+    }),
+  );
 }
 
 function shouldUseSecureCookies(config: AppConfig) {
@@ -775,6 +845,8 @@ function publicTrader(trader: any) {
     trader_id: trader.trader_id,
     handle: trader.handle,
     display_name: trader.display_name,
+    custom_label: trader.custom_label ?? null,
+    label: trader.custom_label || (trader.handle ? `@${trader.handle}` : trader.display_name),
     source: trader.source,
     wallets: Array.isArray(trader.wallets)
       ? trader.wallets.map((wallet: any) => ({
@@ -820,6 +892,9 @@ function publicPosition(position: any) {
     closed_at: position.closed_at,
     handle: position.handle,
     display_name: position.display_name,
+    source_type: position.source_type ?? "leader",
+    source_label: position.source_label ?? null,
+    source_metadata: position.source_metadata ?? {},
     take_profit_pct: position.take_profit_pct,
     stop_loss_pct: position.stop_loss_pct,
     max_hold_seconds: position.max_hold_seconds,
@@ -837,6 +912,7 @@ function publicExecution(execution: any) {
     id: execution.id,
     trader_id: execution.trader_id,
     source_tx_hash: execution.source_tx_hash,
+    source_type: execution.source_type ?? null,
     chain: execution.chain,
     token: execution.token,
     side: execution.side,

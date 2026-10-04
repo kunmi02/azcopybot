@@ -96,7 +96,7 @@ function shortToken(value: string) {
 }
 
 function leaderLabel(leader: any) {
-  return leader?.handle ? `@${leader.handle}` : leader?.display_name || "Leader";
+  return leader?.custom_label || leader?.label || (leader?.handle ? `@${leader.handle}` : leader?.display_name) || "Leader";
 }
 
 function leaderDomId(leader: any) {
@@ -883,6 +883,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         <a href="#discovery">Discovery</a>
         <a href="#leaders">Leaders</a>
         <a href="/leader-transactions">Leader txs</a>
+        <a href="/leader-executions">Executions</a>
         <a href="/auto-trading">Auto trading</a>
       </nav>
 
@@ -1541,6 +1542,7 @@ function LeaderCard({
   const [editing, setEditing] = useState(false);
   const t = leader;
   const isActive = active && t.enabled !== false;
+  const [customLabel, setCustomLabel] = useState(t.custom_label ?? "");
   const [tradeAmountUsd, setTradeAmountUsd] = useState(
     String(t.trade_amount_usd),
   );
@@ -1567,6 +1569,7 @@ function LeaderCard({
 
   async function saveSettings() {
     await updateConfig(t.config_id, {
+      customLabel,
       tradeAmountUsd: Number(tradeAmountUsd),
       takeProfitPct: takeProfitPct ? Number(takeProfitPct) : null,
       stopLossPct: stopLossPct ? Number(stopLossPct) : null,
@@ -1598,6 +1601,7 @@ function LeaderCard({
         <div>
           <h3>{label}</h3>
           <div className="muted mono">
+            {t.custom_label && (t.handle || t.display_name) ? `${t.handle ? `@${t.handle}` : t.display_name} · ` : ""}
             {t.wallets
               ?.map((w: any) => `${w.chain}:${String(w.address).slice(0, 8)}…`)
               .join(" · ")}
@@ -1697,6 +1701,16 @@ function LeaderCard({
         {editing ? (
           <>
             <label>
+              Label
+              <input
+                type="text"
+                maxLength={80}
+                placeholder={t.handle ? `@${t.handle}` : t.display_name || "Wallet label"}
+                value={customLabel}
+                onChange={(e) => setCustomLabel(e.target.value)}
+              />
+            </label>
+            <label>
               $ / entry
               <input
                 type="number"
@@ -1756,6 +1770,10 @@ function LeaderCard({
           </>
         ) : (
           <>
+            <SettingValue
+              label="Label"
+              value={t.custom_label || "default"}
+            />
             <SettingValue
               label="$ / entry"
               value={`$${Number(t.trade_amount_usd).toFixed(2)}`}
@@ -1824,6 +1842,9 @@ function LeaderCard({
           </div>
         </LeaderPanel>
         <LeaderPanel title="Recent executions" count={executions.length}>
+          <div className="leaderPanelActions">
+            <a href={`/leader-executions?configId=${encodeURIComponent(t.config_id)}`}>View all executions</a>
+          </div>
           <div className="executionCards">
             {executions.slice(0, 6).map((e) => {
               const status = String(e.status ?? "");

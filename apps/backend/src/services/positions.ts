@@ -429,14 +429,23 @@ export class PositionService {
         const heldSeconds =
           (Date.now() - new Date(p.opened_at).getTime()) / 1000;
 
-        if (p.take_profit_pct != null && pnlPct >= Number(p.take_profit_pct)) {
-          await this.exit(p.user_id, p.id, 100, "TAKE_PROFIT");
-        } else if (
+        const minHoldSeconds =
+          p.source_type === "auto" ? Number(p.min_hold_seconds ?? 0) : 0;
+        const minimumHoldActive = heldSeconds < minHoldSeconds;
+
+        if (
           p.stop_loss_pct != null &&
           pnlPct <= -Number(p.stop_loss_pct)
         ) {
           await this.exit(p.user_id, p.id, 100, "STOP_LOSS");
         } else if (
+          !minimumHoldActive &&
+          p.take_profit_pct != null &&
+          pnlPct >= Number(p.take_profit_pct)
+        ) {
+          await this.exit(p.user_id, p.id, 100, "TAKE_PROFIT");
+        } else if (
+          !minimumHoldActive &&
           p.max_hold_seconds != null &&
           heldSeconds >= Number(p.max_hold_seconds)
         ) {

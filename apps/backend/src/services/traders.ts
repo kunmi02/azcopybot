@@ -60,7 +60,7 @@ export class TraderService {
     try { new PublicKey(input.address); } catch { throw new Error("INVALID_SOLANA_ADDRESS"); }
     const trader = await this.db.upsertManualTrader(input);
     if (!trader) throw new Error("TRADER_UPSERT_FAILED");
-    const config = await this.db.followTrader(userId, trader.id);
+    const config = await this.db.followTrader(userId, trader.id, input.label);
     await this.refreshWatchers();
     return { trader, config };
   }

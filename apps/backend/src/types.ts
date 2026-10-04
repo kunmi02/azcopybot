@@ -39,6 +39,7 @@ export interface CopyConfig {
   takeProfitPct: number | null;
   stopLossPct: number | null;
   maxHoldSeconds: number | null;
+  customLabel: string | null;
   dryRun: boolean;
   enabled: boolean;
 }
