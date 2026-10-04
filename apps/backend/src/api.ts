@@ -19,6 +19,7 @@ import type { ActivityService } from "./services/activity.js";
 import type { HealthService } from "./services/health.js";
 import type { RetryExecutionService } from "./services/retry.js";
 import type { SourcingService } from "./services/sourcing.js";
+import type { MarketSignalService } from "./services/market-signals.js";
 
 export async function buildApi(
   config: AppConfig,
@@ -31,6 +32,7 @@ export async function buildApi(
   health: HealthService,
   retryExecutions: RetryExecutionService,
   sourcing: SourcingService,
+  marketSignals: MarketSignalService,
 ) {
   const app = Fastify({ logger: true });
   await app.register(cors, {
@@ -253,6 +255,24 @@ export async function buildApi(
       clearInterval(keepAlive);
       unsubscribe();
       app.log.info({ userId: user.id }, "activity_stream_closed");
+    });
+  });
+
+  app.get("/api/market-signals", async (req) => {
+    await requireUser(req, db);
+    const limit = Math.max(10, Math.min(100, Number((req.query as any)?.limit ?? 50) || 50));
+    return marketSignals.feed(limit);
+  });
+
+  app.post("/api/market-signals/scan", async (req) => {
+    await requireUser(req, db);
+    const body = req.body as any;
+    return marketSignals.scan({
+      maxTokens: body?.maxTokens == null ? 20 : Number(body.maxTokens),
+      deepCheckTokens: body?.deepCheckTokens == null ? 10 : Number(body.deepCheckTokens),
+      minLiquidityUsd: body?.minLiquidityUsd == null ? 5_000 : Number(body.minLiquidityUsd),
+      minVolumeH1Usd: body?.minVolumeH1Usd == null ? 1_000 : Number(body.minVolumeH1Usd),
+      minTxnsH1: body?.minTxnsH1 == null ? 10 : Number(body.minTxnsH1),
     });
   });
 

@@ -317,6 +317,36 @@ export class Database {
         UNIQUE(winning_token_id,wallet_address)
       );
 
+
+      CREATE TABLE IF NOT EXISTS market_signal_snapshots (
+        id TEXT PRIMARY KEY,
+        chain TEXT NOT NULL,
+        token_mint TEXT NOT NULL,
+        symbol TEXT,
+        name TEXT,
+        price_usd DOUBLE PRECISION,
+        liquidity_usd DOUBLE PRECISION,
+        market_cap_usd DOUBLE PRECISION,
+        volume_h1_usd DOUBLE PRECISION,
+        txns_h1 INTEGER,
+        age_minutes DOUBLE PRECISION,
+        price_change_m5_pct DOUBLE PRECISION,
+        price_change_h1_pct DOUBLE PRECISION,
+        signal_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+        recommendation TEXT NOT NULL,
+        buy_reasons TEXT[] NOT NULL DEFAULT '{}',
+        risk_reasons TEXT[] NOT NULL DEFAULT '{}',
+        avoid_reasons TEXT[] NOT NULL DEFAULT '{}',
+        entry_plan TEXT[] NOT NULL DEFAULT '{}',
+        exit_plan TEXT[] NOT NULL DEFAULT '{}',
+        quality JSONB NOT NULL DEFAULT '{}'::jsonb,
+        sources TEXT[] NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS market_signal_snapshots_created_idx ON market_signal_snapshots(created_at DESC);
+      CREATE INDEX IF NOT EXISTS market_signal_snapshots_token_idx ON market_signal_snapshots(chain, token_mint, created_at DESC);
+      CREATE INDEX IF NOT EXISTS market_signal_snapshots_recommendation_idx ON market_signal_snapshots(recommendation, signal_score DESC);
+
       CREATE TABLE IF NOT EXISTS wallet_source_stats (
         candidate_id TEXT PRIMARY KEY REFERENCES wallet_candidates(id) ON DELETE CASCADE,
         winning_token_appearances INTEGER NOT NULL DEFAULT 0,
@@ -1728,6 +1758,112 @@ export class Database {
       LIMIT $1
     `,
       [limit],
+    );
+    return rows;
+  }
+
+  async insertMarketSignalSnapshot(input: {
+    chain: string;
+    tokenMint: string;
+    symbol?: string | null;
+    name?: string | null;
+    priceUsd?: number | null;
+    liquidityUsd?: number | null;
+    marketCapUsd?: number | null;
+    volumeH1Usd?: number | null;
+    txnsH1?: number | null;
+    ageMinutes?: number | null;
+    priceChangeM5Pct?: number | null;
+    priceChangeH1Pct?: number | null;
+    signalScore: number;
+    recommendation: string;
+    buyReasons: string[];
+    riskReasons: string[];
+    avoidReasons: string[];
+    entryPlan: string[];
+    exitPlan: string[];
+    quality?: Record<string, unknown>;
+    sources: string[];
+  }) {
+    const id = randomUUID();
+    const { rows } = await this.pool.query(
+      `
+      INSERT INTO market_signal_snapshots(id,chain,token_mint,symbol,name,price_usd,liquidity_usd,market_cap_usd,volume_h1_usd,txns_h1,age_minutes,price_change_m5_pct,price_change_h1_pct,signal_score,recommendation,buy_reasons,risk_reasons,avoid_reasons,entry_plan,exit_plan,quality,sources)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22)
+      RETURNING *
+    `,
+      [
+        id,
+        input.chain,
+        input.tokenMint,
+        input.symbol ?? null,
+        input.name ?? null,
+        input.priceUsd ?? null,
+        input.liquidityUsd ?? null,
+        input.marketCapUsd ?? null,
+        input.volumeH1Usd ?? null,
+        input.txnsH1 ?? null,
+        input.ageMinutes ?? null,
+        input.priceChangeM5Pct ?? null,
+        input.priceChangeH1Pct ?? null,
+        input.signalScore,
+        input.recommendation,
+        input.buyReasons,
+        input.riskReasons,
+        input.avoidReasons,
+        input.entryPlan,
+        input.exitPlan,
+        JSON.stringify(input.quality ?? {}),
+        input.sources,
+      ],
+    );
+    return rows[0];
+  }
+
+  async listMarketSignalFeed(limit = 30) {
+    const { rows } = await this.pool.query(
+      `
+      WITH latest AS (
+        SELECT DISTINCT ON (chain, token_mint) *
+        FROM market_signal_snapshots
+        ORDER BY chain, token_mint, created_at DESC
+      )
+      SELECT * FROM latest
+      ORDER BY signal_score DESC, created_at DESC
+      LIMIT $1
+    `,
+      [limit],
+    );
+    return rows;
+  }
+
+  async marketSignalStats() {
+    const { rows } = await this.pool.query(
+      `
+      SELECT
+        COUNT(*)::int AS snapshot_count,
+        MAX(created_at) AS last_scan_at,
+        COUNT(DISTINCT token_mint)::int AS token_count
+      FROM market_signal_snapshots
+    `,
+    );
+    return rows[0];
+  }
+
+  async walletCandidateQuality(wallets: string[]) {
+    if (!wallets.length) return [];
+    const { rows } = await this.pool.query(
+      `
+      SELECT c.wallet_address,c.source_priority,c.analysis_status,
+             st.winning_token_appearances,st.five_x_appearances,st.ten_x_appearances,
+             a.recommendation,a.qualification_score,a.metadata AS analysis_metadata,
+             a.possible_router,a.possible_deployer,a.possible_bot
+      FROM wallet_candidates c
+      LEFT JOIN wallet_source_stats st ON st.candidate_id=c.id
+      LEFT JOIN wallet_candidate_analyses a ON a.candidate_id=c.id
+      WHERE c.wallet_address = ANY($1)
+    `,
+      [wallets],
     );
     return rows;
   }

@@ -884,6 +884,7 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
         <a href="#leaders">Leaders</a>
         <a href="/leader-transactions">Leader txs</a>
         <a href="/leader-executions">Executions</a>
+        <a href="/market-signals">Market signals</a>
         <a href="/auto-trading">Auto trading</a>
       </nav>
 

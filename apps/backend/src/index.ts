@@ -19,6 +19,7 @@ import { HealthService } from "./services/health.js";
 import { RetryExecutionService } from "./services/retry.js";
 import { SourcingService } from "./services/sourcing.js";
 import { AutoTradingService } from "./services/auto-trading.js";
+import { MarketSignalService } from "./services/market-signals.js";
 import {
   HeliusEarlyBuyerSource,
   NoopEarlyBuyerSource,
@@ -120,6 +121,7 @@ const fomoscan = new FomoScanClient(
 );
 const traders = new TraderService(db, fomoscan, refreshWatchers, activity);
 const sourcing = new SourcingService(db, prices, earlyBuyerSource);
+const marketSignals = new MarketSignalService(db, prices, earlyBuyerSource, rpc);
 const autoTrading = new AutoTradingService(db, prices, executor, notify, activity);
 const sourcingScanOptions = {
   maxTokens: config.SOURCING_SCAN_MAX_TOKENS,
@@ -152,6 +154,7 @@ const api = await buildApi(
   health,
   retryExecutions,
   sourcing,
+  marketSignals,
 );
 await api.listen({ host: "0.0.0.0", port: config.API_PORT });
 await telegram.start();
@@ -210,6 +213,18 @@ const autoTradingTimer = setInterval(() => {
     .catch((error) => console.error("auto_trading_loop_failed", error));
 }, 60_000);
 autoTradingTimer.unref();
+const marketSignalInitialTimer = setTimeout(() => {
+  marketSignals
+    .scan({ maxTokens: 20, deepCheckTokens: config.HELIUS_API_KEY ? 10 : 0 })
+    .catch((error) => console.error("market_signal_scan_failed", error));
+}, 25_000);
+marketSignalInitialTimer.unref();
+const marketSignalTimer = setInterval(() => {
+  marketSignals
+    .scan({ maxTokens: 20, deepCheckTokens: config.HELIUS_API_KEY ? 10 : 0 })
+    .catch((error) => console.error("market_signal_scan_failed", error));
+}, 300_000);
+marketSignalTimer.unref();
 
 async function shutdown(signal: string) {
   console.log("shutdown", signal);
@@ -217,6 +232,8 @@ async function shutdown(signal: string) {
   clearInterval(reconcileTimer);
   clearInterval(sourcingTimer);
   clearInterval(autoTradingTimer);
+  clearInterval(marketSignalTimer);
+  clearTimeout(marketSignalInitialTimer);
   clearTimeout(sourcingInitialTimer);
   await watcher.stop();
   await api.close();
