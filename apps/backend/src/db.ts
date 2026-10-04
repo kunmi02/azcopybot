@@ -197,10 +197,7 @@ export class Database {
 
       CREATE UNIQUE INDEX IF NOT EXISTS positions_one_open_idx
         ON positions(user_id,trader_id,chain,token) WHERE status='open' AND trader_id IS NOT NULL;
-      CREATE UNIQUE INDEX IF NOT EXISTS positions_one_open_auto_idx
-        ON positions(user_id,chain,token) WHERE status='open' AND source_type='auto';
       CREATE INDEX IF NOT EXISTS positions_open_idx ON positions(status, chain, token);
-      CREATE INDEX IF NOT EXISTS positions_source_idx ON positions(user_id, source_type, status, opened_at DESC);
 
       CREATE TABLE IF NOT EXISTS executions (
         id TEXT PRIMARY KEY,
