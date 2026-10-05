@@ -260,7 +260,7 @@ export async function buildApi(
 
   app.get("/api/market-signals", async (req) => {
     await requireUser(req, db);
-    const limit = Math.max(10, Math.min(100, Number((req.query as any)?.limit ?? 50) || 50));
+    const limit = Math.max(1, Math.min(100, Number((req.query as any)?.limit ?? 50) || 50));
     return marketSignals.feed(limit);
   });
 

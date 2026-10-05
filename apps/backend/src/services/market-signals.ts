@@ -30,7 +30,7 @@ export class MarketSignalService {
     if (this.running) return { skipped: "already_running" };
     this.running = true;
     try {
-      const maxTokens = Math.max(5, Math.min(50, Number(options.maxTokens ?? 20)));
+      const maxTokens = Math.max(1, Math.min(50, Number(options.maxTokens ?? 20)));
       const deepCheckTokens = Math.max(0, Math.min(maxTokens, Number(options.deepCheckTokens ?? 10)));
       const discovered = await this.prices.discoverSolanaTokens();
       const candidates = discovered

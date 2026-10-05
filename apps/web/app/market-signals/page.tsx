@@ -52,17 +52,17 @@ export default function MarketSignalsPage() {
   const [deepChecks, setDeepChecks] = useState("10");
   const [maxTokens, setMaxTokens] = useState("20");
 
-  const topChanged = useMemo(() => feed?.all.slice(0, 12) ?? [], [feed]);
+  const displayedSignals = useMemo(() => feed?.all ?? [], [feed]);
 
   useEffect(() => {
-    void load();
+    void load(maxTokens);
   }, []);
 
-  async function load() {
+  async function load(limitValue = maxTokens) {
     setBusy(true);
     setMessage("");
     try {
-      setFeed((await request("/api/market-signals?limit=50")) as Feed);
+      setFeed((await request(`/api/market-signals?limit=${clampLimit(limitValue)}`)) as Feed);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -79,7 +79,7 @@ export default function MarketSignalsPage() {
         body: JSON.stringify({ maxTokens: Number(maxTokens), deepCheckTokens: Number(deepChecks) }),
       });
       setMessage(`Scan complete: ${result.saved ?? 0} saved, ${result.deepChecked ?? 0} deep checked.`);
-      await load();
+      await load(maxTokens);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -97,36 +97,37 @@ export default function MarketSignalsPage() {
         </div>
         <div className="actions">
           <a className="navButton" href="/">Trading control</a>
-          <button className="secondary" disabled={busy} onClick={() => void load()}>Refresh</button>
+          <button className="secondary" disabled={busy} onClick={() => void load(maxTokens)}>Refresh</button>
         </div>
       </header>
 
       {message && <div className={message.includes("Error") ? "error" : "notice"}>{message}</div>}
 
       <section className="card marketToolbar">
-        <label>Max tokens <input type="number" min="5" max="50" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} /></label>
+        <label>Scan/display tokens <input type="number" min="1" max="50" value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} /></label>
         <label>Helius deep checks <input type="number" min="0" max="30" value={deepChecks} onChange={(e) => setDeepChecks(e.target.value)} /></label>
         <button disabled={busy} onClick={() => void scanNow()}>{busy ? "Scanning…" : "Scan now"}</button>
-        <span className="muted">Last scan: {feed?.stats.lastScanAt ? new Date(feed.stats.lastScanAt).toLocaleString() : "never"}</span>
+        <span className="muted">Showing top {displayedSignals.length} of {feed?.stats.tokenCount ?? 0} tracked tokens · Last scan: {feed?.stats.lastScanAt ? new Date(feed.stats.lastScanAt).toLocaleString() : "never"}</span>
       </section>
 
       <section className="stats">
         <div className="card stat"><span>Buy/watch</span><strong>{feed?.buyWatchlist.length ?? 0}</strong></div>
         <div className="card stat"><span>Avoid list</span><strong>{feed?.avoidList.length ?? 0}</strong></div>
-        <div className="card stat"><span>Tokens tracked</span><strong>{feed?.stats.tokenCount ?? 0}</strong></div>
-        <div className="card stat"><span>Snapshots</span><strong>{feed?.stats.snapshotCount ?? 0}</strong></div>
+        <div className="card stat"><span>Shown now</span><strong>{displayedSignals.length}</strong></div>
+        <div className="card stat"><span>Historical snapshots</span><strong>{feed?.stats.snapshotCount ?? 0}</strong></div>
       </section>
 
       <section className="marketGrid">
         <SignalColumn title="Top coins to watch" empty="No buy/watch signals yet." signals={feed?.buyWatchlist ?? []} />
-        <SignalColumn title="10 coins not to buy" empty="No avoid signals yet." signals={feed?.avoidList ?? []} />
+        <SignalColumn title="Coins not to buy" empty="No avoid signals yet." signals={feed?.avoidList ?? []} />
       </section>
 
       <section className="card">
-        <div className="sectionTitle"><h2>All latest signals</h2><span>{topChanged.length}</span></div>
+        <div className="sectionTitle"><h2>Top current signals</h2><span>{displayedSignals.length}</span></div>
+        <p className="muted compactText">This section is capped by Scan/display tokens. Historical totals continue to grow as background scans store snapshots.</p>
         <div className="marketList">
-          {topChanged.map((signal) => <SignalCard key={signal.id} signal={signal} />)}
-          {!topChanged.length && <p className="muted">No market signals yet. Run a scan.</p>}
+          {displayedSignals.map((signal) => <SignalCard key={signal.id} signal={signal} />)}
+          {!displayedSignals.length && <p className="muted">No market signals yet. Run a scan.</p>}
         </div>
       </section>
     </main>
@@ -209,4 +210,10 @@ function pct(value: number | null) {
 
 function shortAddress(value: string) {
   return value.length <= 14 ? value : `${value.slice(0, 6)}…${value.slice(-6)}`;
+}
+
+function clampLimit(value: string) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 20;
+  return Math.max(1, Math.min(50, Math.floor(parsed)));
 }
