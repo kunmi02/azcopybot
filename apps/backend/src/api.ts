@@ -94,6 +94,22 @@ export async function buildApi(
   app.get("/api/me", async (req) => ({
     user: publicUser(await requireUser(req, db)),
   }));
+
+  app.patch("/api/me/telegram-notifications", async (req, reply) => {
+    const user = await requireUser(req, db);
+    const enabled = (req.body as any)?.enabled;
+    if (typeof enabled !== "boolean") {
+      return reply.status(400).send({ error: "enabled must be boolean" });
+    }
+    const updated = await db.setTelegramNotificationsEnabled(user.id, enabled);
+    return {
+      telegramNotificationsEnabled: Boolean(
+        updated?.telegram_notifications_enabled,
+      ),
+      user: publicUser(updated),
+    };
+  });
+
   app.get("/api/dashboard", async (req) => {
     const user = await requireUser(req, db);
     const dashboard = await db.dashboard(user.id);
@@ -847,6 +863,10 @@ function publicUser(user: any) {
   return {
     display_name: user?.display_name ?? "",
     paused: Boolean(user?.paused),
+    telegram_notifications_enabled:
+      user?.telegram_notifications_enabled == null
+        ? true
+        : Boolean(user.telegram_notifications_enabled),
   };
 }
 

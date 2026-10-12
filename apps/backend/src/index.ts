@@ -92,6 +92,15 @@ const notify = async (
   text: string,
   buttons?: Array<Array<{ text: string; callback_data: string }>>,
 ) => {
+  const user = await db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    console.warn("telegram_notify_skipped_unknown_chat", { chatId });
+    return;
+  }
+  if (user.telegram_notifications_enabled === false) {
+    console.log("telegram_notify_skipped_muted", { userId: user.id });
+    return;
+  }
   await telegram.notify(chatId, text, buttons);
 };
 

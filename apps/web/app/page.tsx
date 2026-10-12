@@ -5,7 +5,11 @@ import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 type Dashboard = {
-  user: any;
+  user: {
+    display_name: string;
+    paused: boolean;
+    telegram_notifications_enabled?: boolean;
+  };
   wallet: any;
   positions: any[];
   traders: any[];
@@ -542,6 +546,38 @@ export default function Home() {
     await load();
   }
 
+  async function toggleTelegramNotifications(enabled: boolean) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await request("/api/me/telegram-notifications", token, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      });
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              user: {
+                ...current.user,
+                telegram_notifications_enabled:
+                  result.telegramNotificationsEnabled,
+              },
+            }
+          : current,
+      );
+      setMessage(
+        enabled
+          ? "Telegram notifications enabled."
+          : "Telegram notifications muted. Activity will still appear in the dashboard.",
+      );
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function retryExecution(execution: any) {
     const action = execution.side === "sell" ? "sell" : "buy";
     if (
@@ -842,11 +878,35 @@ Amount: $${Number(execution.requested_usd).toFixed(2)}`
           <span className={data.user.paused ? "badge warn" : "badge live"}>
             {data.user.paused ? "NEW ENTRIES PAUSED" : "ACTIVE"}
           </span>
+          <span
+            className={
+              data.user.telegram_notifications_enabled === false
+                ? "badge warn"
+                : "badge live"
+            }
+          >
+            {data.user.telegram_notifications_enabled === false
+              ? "TELEGRAM MUTED"
+              : "TELEGRAM ON"}
+          </span>
           <button
             className="secondary"
             onClick={() => pause(!data.user.paused)}
           >
             {data.user.paused ? "Resume entries" : "Pause all new entries"}
+          </button>
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() =>
+              void toggleTelegramNotifications(
+                data.user.telegram_notifications_enabled === false,
+              )
+            }
+          >
+            {data.user.telegram_notifications_enabled === false
+              ? "Enable Telegram"
+              : "Mute Telegram"}
           </button>
           <button
             className="secondary"

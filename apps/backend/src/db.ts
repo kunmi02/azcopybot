@@ -49,6 +49,7 @@ export class Database {
         telegram_chat_id TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL,
         paused BOOLEAN NOT NULL DEFAULT false,
+        telegram_notifications_enabled BOOLEAN NOT NULL DEFAULT true,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
@@ -389,6 +390,9 @@ export class Database {
       );
     `);
     await this.pool.query(
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_notifications_enabled BOOLEAN NOT NULL DEFAULT true`,
+    );
+    await this.pool.query(
       `ALTER TABLE copy_configs ALTER COLUMN mirror_exits SET DEFAULT true`,
     );
     await this.pool.query(
@@ -467,6 +471,14 @@ export class Database {
     return rows[0] ?? null;
   }
 
+  async getUserByTelegramChatId(chatId: string) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM users WHERE telegram_chat_id=$1`,
+      [chatId],
+    );
+    return rows[0] ?? null;
+  }
+
   async getUserById(id: string) {
     const { rows } = await this.pool.query(`SELECT * FROM users WHERE id=$1`, [
       id,
@@ -479,6 +491,14 @@ export class Database {
       userId,
       paused,
     ]);
+  }
+
+  async setTelegramNotificationsEnabled(userId: string, enabled: boolean) {
+    const { rows } = await this.pool.query(
+      `UPDATE users SET telegram_notifications_enabled=$2 WHERE id=$1 RETURNING *`,
+      [userId, enabled],
+    );
+    return rows[0] ?? null;
   }
 
   async isUserPaused(userId: string) {
